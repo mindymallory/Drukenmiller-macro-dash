@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Macro Checklist</title>
+<meta name="description" content="The macro indicators Stan Druckenmiller says he watches, refreshed daily from free public data.">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+</head>
+<body>
+<main class="viz-root">
+  <header class="top">
+    <div>
+      <h1>Macro checklist</h1>
+      <p class="sub">The signals Stan Druckenmiller says he reads to decide whether he has clarity: policy vs growth, the Fed's path, commodities, breadth, credit, cyclicals vs defensives, inflation, plus the dollar, rates and fiscal backdrop.</p>
+    </div>
+    <p class="updated" id="updated">Loading data…</p>
+  </header>
+
+  <section class="score" id="score" aria-label="Signal scorecard"></section>
+
+  <div class="controls" role="group" aria-label="Time range">
+    <span class="controls-label">Range</span>
+    <button data-range="1">1Y</button>
+    <button data-range="3">3Y</button>
+    <button data-range="5" class="on">5Y</button>
+    <button data-range="10">10Y</button>
+    <button data-range="0">Max</button>
+  </div>
+
+  <section id="panels"></section>
+
+  <footer class="foot">
+    <p>Signal labels (Supportive, Mixed, Headwind) come from simple rules written for this dashboard and stated on each card. They are not Druckenmiller's own thresholds. "Supportive" means the reading looks like his January setup (loose policy, breakouts, broad participation, tight spreads); "Headwind" means it looks like his November one.</p>
+    <p>Data: FRED (Federal Reserve Bank of St. Louis), including ICE BofA spread series; Yahoo Finance via yfinance. Refreshed each weekday evening by GitHub Actions.</p>
+    <p id="errors" class="errors"></p>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
