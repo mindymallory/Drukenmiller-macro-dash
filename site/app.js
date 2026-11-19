@@ -52,6 +52,7 @@
     if (name === "charts" && DATA && !chartsBuilt) buildCharts();
     if (name === "charts") plots.forEach(({ el }) => Plotly.Plots.resize(el));
     if (name === "map") { sizeMap(); if (DATA && mapDirty) buildMap(); }
+    if (name === "backtest" && DATA) buildBacktest();
     if (!opts.keepScroll) window.scrollTo(0, 0);
   }
   function goGuide(id) {
@@ -246,7 +247,7 @@
         `<span style="width:${h.tailwind * 100}%;background:var(--tw)"></span>` +
         `<span style="width:${h.neutral * 100}%;background:var(--nt)"></span>` +
         `<span style="width:${h.headwind * 100}%;background:var(--hw)"></span></div>` +
-        `<div class="split-label">Last ${h.months} month-ends: tailwind ${pct(h.tailwind)}, neutral ${pct(h.neutral)}, headwind ${pct(h.headwind)}</div>` : "";
+        `<div class="split-label">${h.months} month-ends since ${h.since}: tailwind ${pct(h.tailwind)}, neutral ${pct(h.neutral)}, headwind ${pct(h.headwind)}</div>` : "";
       const box = document.createElement("div");
       box.className = "now";
       box.innerHTML = `${chip(t.state)}<span>Score ${t.s === null ? "n/a" : signed(t.s)} · weight ${t.weight}</span>` +
@@ -352,9 +353,8 @@
     return () => {
       const h = DATA.history;
       const traces = [{
-        x: h.map((p) => p.date), y: h.map((p) => p.score), type: "scatter", mode: "lines+markers",
-        name: "Overall score", line: { color: css("--series-1"), width: 2 }, marker: { size: 4 },
-        customdata: h.map((p) => p.stance), showlegend: false,
+        x: h.map((p) => p.date), y: h.map((p) => p.score), type: "scatter", mode: "lines",
+        name: "Overall score", line: { color: css("--series-1"), width: 2 }, showlegend: false,
         hovertemplate: "%{y:+.2f}<extra>Overall</extra>",
       }];
       const lay = baseLayout(traces, "", [-1, 1]);
@@ -432,12 +432,381 @@
     });
   }
 
-  $$(".controls button").forEach((b) => b.addEventListener("click", () => {
-    $$(".controls button").forEach((x) => x.classList.remove("on"));
+  $$("#tab-charts .controls button").forEach((b) => b.addEventListener("click", () => {
+    $$("#tab-charts .controls button").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
     rangeYears = Number(b.dataset.range);
     redrawCharts();
   }));
+
+  /* -------------------------------------------------------- backtest -- */
+  /* Mirrors bt_scores / bt_summary in fetch/fetch_data.py. All monthly. */
+  const BT = { h: 12, split: null, nb: 5, P: null, P0: null, built: false, plots: {}, raf: 0 };
+  const clip1 = (x) => Math.max(-1, Math.min(1, x));
+  const ymOf = (iso) => Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1;
+  const btIds = () => DATA.backtest.params.map((q) => q.id);
+
+  function btDefaults() {
+    const o = {};
+    DATA.backtest.params.forEach((q) => { o[q.id] = { w: q.weight, c: q.center, k: q.scale }; });
+    return o;
+  }
+  function btScoresWith(P, rows) {
+    const B = DATA.backtest, ids = btIds();
+    const tot = ids.reduce((s, id) => s + P[id].w, 0);
+    const one = (i) => {
+      let num = 0, den = 0;
+      ids.forEach((id) => {
+        const m = B.metrics[id][i], q = P[id];
+        if (m === null || !(q.w > 0)) return;
+        num += q.w * clip1((m - q.c) / q.k);
+        den += q.w;
+      });
+      return den > 0 && den >= 0.5 * tot ? num / den : null;
+    };
+    if (rows) { const out = new Array(B.dates.length).fill(null); rows.forEach((i) => { out[i] = one(i); }); return out; }
+    return B.dates.map((_, i) => one(i));
+  }
+  function mean(a) { return a.reduce((s, v) => s + v, 0) / a.length; }
+  function pearson(x, y) {
+    const n = x.length;
+    if (n < 3) return NaN;
+    const mx = mean(x), my = mean(y);
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < n; i++) { const a = x[i] - mx, b = y[i] - my; sxy += a * b; sxx += a * a; syy += b * b; }
+    return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : NaN;
+  }
+  function ranks(a) {
+    const o = a.map((v, i) => [v, i]).sort((p, q) => p[0] - q[0]);
+    const r = new Array(a.length);
+    for (let i = 0; i < o.length;) {
+      let j = i;
+      while (j + 1 < o.length && o[j + 1][0] === o[i][0]) j++;
+      for (let k = i; k <= j; k++) r[o[k][1]] = (i + j) / 2 + 1;
+      i = j + 1;
+    }
+    return r;
+  }
+  /* t-stat of b in y = a + b x with Newey-West (Bartlett) standard errors. */
+  function nwT(x, y, L) {
+    const n = x.length;
+    if (n < 10) return NaN;
+    let sx = 0, sxx = 0, sy = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sx += x[i]; sxx += x[i] * x[i]; sy += y[i]; sxy += x[i] * y[i]; }
+    const det = n * sxx - sx * sx;
+    if (!(det > 0)) return NaN;
+    const inv = [[sxx / det, -sx / det], [-sx / det, n / det]];
+    const b1 = (n * sxy - sx * sy) / det, b0 = (sy - b1 * sx) / n;
+    const u = x.map((xi, i) => { const e = y[i] - b0 - b1 * xi; return [e, e * xi]; });
+    const S = [[0, 0], [0, 0]];
+    const add = (l, w) => {
+      for (let t = l; t < n; t++) for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) {
+        const g = u[t][a] * u[t - l][b];
+        S[a][b] += l === 0 ? g : w * g;
+        if (l > 0) S[b][a] += w * g;
+      }
+    };
+    add(0, 1);
+    for (let l = 1; l <= L; l++) add(l, 1 - l / (L + 1));
+    const m = (A, B) => [[A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]],
+      [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1]]];
+    const V = m(m(inv, S), inv);
+    return V[1][1] > 0 ? b1 / Math.sqrt(V[1][1]) : NaN;
+  }
+
+  function btRows(sc, h) {
+    const f = DATA.backtest["fwd" + h];
+    return sc.map((v, i) => i).filter((i) => sc[i] !== null && f[i] !== null);
+  }
+  const splitYm = () => BT.split * 12;
+  function trainRows(idx, h) { return idx.filter((i) => ymOf(DATA.backtest.dates[i]) + h < splitYm()); }
+  function testRows(idx) { return idx.filter((i) => ymOf(DATA.backtest.dates[i]) >= splitYm()); }
+
+  /* Weight each signal by its own (positive) correlation with forward returns on `rows`. */
+  function icWeights(P, rows, h) {
+    const B = DATA.backtest, f = B["fwd" + h], w = {};
+    btIds().forEach((id) => {
+      const q = P[id], xs = [], ys = [];
+      rows.forEach((i) => {
+        const m = B.metrics[id][i];
+        if (m !== null && f[i] !== null) { xs.push(clip1((m - q.c) / q.k)); ys.push(f[i]); }
+      });
+      const c = xs.length >= 24 ? pearson(xs, ys) : NaN;
+      w[id] = isFinite(c) ? Math.max(0, c) : 0;
+    });
+    const tot = Object.values(w).reduce((s, v) => s + v, 0);
+    const out = {};
+    btIds().forEach((id) => { out[id] = { w: tot ? (w[id] / tot) * 100 : 100 / btIds().length, c: P[id].c, k: P[id].k }; });
+    return out;
+  }
+  /* Expanding window: refit each January on months whose forward window had already closed. */
+  function walkForward(P, h, idx) {
+    const B = DATA.backtest, out = new Array(B.dates.length).fill(null);
+    let cur = null;
+    B.dates.forEach((d, i) => {
+      if (d.slice(5, 7) === "01" || cur === null) {
+        const ym = ymOf(d);
+        const rows = idx.filter((j) => ymOf(B.dates[j]) + h <= ym);
+        cur = rows.length >= 60 ? icWeights(P, rows, h) : null;
+      }
+      if (cur) out[i] = btScoresWith(cur, [i])[i];
+    });
+    return out;
+  }
+
+  function btStats(sc, h, idx) {
+    const f = DATA.backtest["fwd" + h];
+    const rows = idx.filter((i) => sc[i] !== null);
+    const xs = rows.map((i) => sc[i]), ys = rows.map((i) => f[i]);
+    const sub = (ii) => { const r = ii.filter((i) => sc[i] !== null); return r.length > 5 ? pearson(r.map((i) => sc[i]), r.map((i) => f[i])) : NaN; };
+    const non = rows.filter((_, k) => k % h === 0);
+    return {
+      n: rows.length, corr: pearson(xs, ys), ric: pearson(ranks(xs), ranks(ys)), t: nwT(xs, ys, h - 1),
+      non: sub(non), nonN: non.length, train: sub(trainRows(rows, h)), test: sub(testRows(rows)),
+    };
+  }
+
+  function sameP(a, b) { return btIds().every((id) => a[id].w === b[id].w && a[id].c === b[id].c && a[id].k === b[id].k); }
+  const f2 = (v) => (isFinite(v) ? signed(v, 2) : "–");
+
+  function btCompute() {
+    const h = BT.h;
+    const s0 = btScoresWith(BT.P0), s1 = btScoresWith(BT.P);
+    const idx0 = btRows(s0, h), idx1 = btRows(s1, h);
+    const fitP = icWeights(BT.P, trainRows(idx1, h), h);
+    const sf = btScoresWith(fitP), wf = walkForward(BT.P, h, idx1);
+    return {
+      s0, s1, idx1, fitP, wf,
+      rows: [
+        { name: "Default settings", st: btStats(s0, h, idx0) },
+        { name: "Your settings", st: btStats(s1, h, idx1), mine: true },
+        { name: "Weights fitted before the split", st: btStats(sf, h, idx1), fit: true },
+        { name: "Walk-forward (refit each January)", st: btStats(wf, h, idx1), wf: true },
+      ],
+    };
+  }
+
+  function btTable(R) {
+    const yr = BT.split;
+    const head = `<tr><th>Score</th><th>Corr.</th><th>Rank IC</th><th>Newey-West t</th><th>Non-overlapping corr. (n)</th>` +
+      `<th>Before ${yr}</th><th>${yr} on</th></tr>`;
+    const body = R.rows.map((r) => {
+      const s = r.st;
+      const tr = r.wf ? '<td class="na">n/a</td>' : `<td${r.fit ? ' class="ins"' : ""}>${f2(s.train)}</td>`;
+      return `<tr${r.mine ? ' class="mine"' : ""}><td>${esc(r.name)}</td><td>${f2(s.corr)}</td><td>${f2(s.ric)}</td>` +
+        `<td>${isFinite(s.t) ? signed(s.t, 1) : "–"}</td><td>${f2(s.non)} (${s.nonN})</td>${tr}<td class="oos">${f2(s.test)}</td></tr>`;
+    }).join("");
+    return `<div class="table-wrap"><table class="datatable bt-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  function btLead(R) {
+    const d = R.rows[0].st, B = DATA.backtest;
+    if (!R.idx1.length) return '<p class="bt-lead">Your settings leave too little weight to score any month. Raise some weights or press Reset.</p>';
+    const first = B.dates[R.idx1[0]], last = B.dates[R.idx1[R.idx1.length - 1]];
+    const mo = (iso) => new Date(iso + "T00:00:00").toLocaleDateString(undefined, { year: "numeric", month: "short" });
+    return `<p class="bt-lead">With the default settings, the score's correlation with the next ${BT.h} months of returns is ` +
+      `<b>${f2(d.train)}</b> before ${BT.split} and <b>${f2(d.test)}</b> from ${BT.split} on (${f2(d.corr)} over the whole sample).</p>` +
+      `<p class="caveat">${esc(B.ret_name)}, month-ends ${mo(first)} to ${mo(last)}, ${R.rows[1].st.n} months. ` +
+      `Overlapping ${BT.h}-month windows leave only about ${Math.round(R.rows[1].st.n / BT.h)} independent observations, ` +
+      `so a correlation needs to be roughly ±${(2 / Math.sqrt(Math.max(4, R.rows[1].st.n / BT.h))).toFixed(2)} or larger to stand out from noise.</p>`;
+  }
+
+  function btLayoutBase() {
+    return {
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+      font: { family: 'system-ui, -apple-system, "Segoe UI", sans-serif', size: 12, color: css("--text-secondary") },
+      hoverlabel: { bgcolor: css("--surface-1"), bordercolor: css("--axis"), font: { color: css("--text-primary") } },
+      legend: { orientation: "h", x: 0, y: 1.02, yanchor: "bottom" }, shapes: [], annotations: [],
+    };
+  }
+  const ax = (o) => Object.assign({ gridcolor: css("--grid"), linecolor: css("--axis"), zeroline: false }, o || {});
+
+  function btTimePlot(R) {
+    const B = DATA.backtest, f = B["fwd" + BT.h], same = sameP(BT.P, BT.P0);
+    const tr = [];
+    if (!same) tr.push({ x: B.dates, y: R.s0, name: "Default score", type: "scatter", mode: "lines",
+      line: { color: css("--text-muted"), width: 1.2 }, hovertemplate: "%{y:+.2f}<extra>Default</extra>" });
+    tr.push({ x: B.dates, y: R.s1, name: same ? "Score" : "Your score", type: "scatter", mode: "lines",
+      line: { color: css("--series-1"), width: 2 }, hovertemplate: "%{y:+.2f}<extra>Score</extra>" });
+    tr.push({ x: B.dates, y: f, name: `Next ${BT.h} months' return`, type: "scatter", mode: "lines", yaxis: "y2",
+      line: { color: css("--series-2"), width: 1.6 }, hovertemplate: "%{y:.1f}%<extra>Next " + BT.h + "m</extra>" });
+    const L = btLayoutBase();
+    Object.assign(L, {
+      margin: { l: 52, r: 12, t: 28, b: 28 }, hovermode: "x unified",
+      xaxis: ax({ type: "date" }),
+      yaxis: ax({ domain: [0.54, 1], range: [-1, 1], title: { text: "Score", font: { size: 11 } } }),
+      yaxis2: ax({ domain: [0, 0.44], anchor: "x", ticksuffix: "%", title: { text: "Fwd return", font: { size: 11 } } }),
+    });
+    L.shapes.push({ type: "rect", xref: "x", yref: "paper", x0: BT.split + "-01-01", x1: B.dates[B.dates.length - 1], y0: 0, y1: 1,
+      fillcolor: css("--text-muted"), opacity: 0.1, line: { width: 0 }, layer: "below" });
+    [["y", 0], ["y2", 0]].forEach(([y]) => L.shapes.push({ type: "line", xref: "paper", yref: y, x0: 0, x1: 1, y0: 0, y1: 0, line: { color: css("--axis"), width: 1 } }));
+    L.annotations.push({ xref: "x", yref: "paper", x: BT.split + "-01-01", y: 1, text: " Test period →", showarrow: false,
+      xanchor: "left", yanchor: "top", font: { size: 11, color: css("--text-muted") } });
+    return { tr, L };
+  }
+
+  function btScatter(R) {
+    const B = DATA.backtest, f = B["fwd" + BT.h], sc = R.s1;
+    const train = new Set(trainRows(R.idx1, BT.h)), test = new Set(testRows(R.idx1));
+    const grp = (name, keep, color) => {
+      const ii = R.idx1.filter(keep);
+      return { x: ii.map((i) => sc[i]), y: ii.map((i) => f[i]), text: ii.map((i) => B.dates[i].slice(0, 7)), name, type: "scatter", mode: "markers",
+        marker: { color, size: 6, opacity: 0.75 }, hovertemplate: "%{text}: score %{x:+.2f}, next " + BT.h + "m %{y:.1f}%<extra></extra>" };
+    };
+    const tr = [grp(`Before ${BT.split}`, (i) => train.has(i), css("--series-1")),
+      grp(`${BT.split} on`, (i) => test.has(i), css("--series-2"))];
+    const gap = R.idx1.filter((i) => !train.has(i) && !test.has(i));
+    if (gap.length) tr.push(Object.assign(grp("Gap (window spans the split)", (i) => !train.has(i) && !test.has(i), css("--text-muted")), {}));
+    const xs = R.idx1.map((i) => sc[i]), ys = R.idx1.map((i) => f[i]);
+    if (xs.length > 3) {
+      const mx = mean(xs), my = mean(ys);
+      let sxy = 0, sxx = 0;
+      xs.forEach((x, k) => { sxy += (x - mx) * (ys[k] - my); sxx += (x - mx) ** 2; });
+      const b = sxx ? sxy / sxx : 0, lo = Math.min(...xs), hi = Math.max(...xs);
+      tr.push({ x: [lo, hi], y: [my + b * (lo - mx), my + b * (hi - mx)], name: "Fit, whole sample", type: "scatter", mode: "lines",
+        line: { color: css("--text-primary"), width: 1.5, dash: "dash" }, hoverinfo: "skip" });
+    }
+    const L = btLayoutBase();
+    Object.assign(L, { margin: { l: 52, r: 12, t: 28, b: 40 }, hovermode: "closest",
+      xaxis: ax({ title: { text: "Score at month-end", font: { size: 11 } }, range: [-1.05, 1.05] }),
+      yaxis: ax({ ticksuffix: "%", title: { text: `Next ${BT.h} months`, font: { size: 11 } } }) });
+    return { tr, L };
+  }
+
+  function bucketMeans(ii, sc, f, nb) {
+    const o = ii.slice().sort((a, b) => sc[a] - sc[b]);
+    const out = [];
+    for (let b = 0; b < nb; b++) {
+      const part = o.slice(Math.floor((b * o.length) / nb), Math.floor(((b + 1) * o.length) / nb));
+      out.push(part.length ? { m: mean(part.map((i) => f[i])), n: part.length, lo: sc[part[0]], hi: sc[part[part.length - 1]] } : null);
+    }
+    return out;
+  }
+  function btBuckets(R) {
+    const f = DATA.backtest["fwd" + BT.h], sc = R.s1, nb = BT.nb;
+    const labs = nb === 3 ? ["Low third", "Middle third", "High third"] : ["Lowest fifth", "2nd", "3rd", "4th", "Highest fifth"];
+    const mk = (name, ii, color) => {
+      const bm = bucketMeans(ii, sc, f, nb);
+      return { x: labs, y: bm.map((b) => (b ? b.m : null)), name, type: "bar", marker: { color },
+        customdata: bm.map((b) => (b ? [b.n, b.lo, b.hi] : [0, 0, 0])),
+        hovertemplate: "%{y:.1f}% avg, %{customdata[0]} months, scores %{customdata[1]:+.2f} to %{customdata[2]:+.2f}<extra>" + name + "</extra>" };
+    };
+    const tr = [mk("Whole sample", R.idx1, css("--series-1")), mk(`${BT.split} on`, testRows(R.idx1), css("--series-2"))];
+    const L = btLayoutBase();
+    Object.assign(L, { margin: { l: 52, r: 12, t: 28, b: 40 }, barmode: "group", hovermode: "closest",
+      xaxis: ax({ title: { text: "Months grouped by score", font: { size: 11 } } }),
+      yaxis: ax({ ticksuffix: "%", title: { text: `Avg next ${BT.h} months`, font: { size: 11 } } }) });
+    if (R.idx1.length) {
+      const m = mean(R.idx1.map((i) => f[i]));
+      L.shapes.push({ type: "line", xref: "paper", x0: 0, x1: 1, y0: m, y1: m, line: { color: css("--text-muted"), width: 1, dash: "dot" } });
+    }
+    return { tr, L };
+  }
+
+  function btDraw() {
+    const R = btCompute();
+    BT.last = R;
+    $("#bt-lead").innerHTML = btLead(R);
+    $("#bt-stats").innerHTML = btTable(R);
+    const cfg = { displayModeBar: false, responsive: true };
+    [["ts", btTimePlot], ["sc", btScatter], ["bk", btBuckets]].forEach(([k, fn]) => {
+      const { tr, L } = fn(R);
+      const el = $("#bt-" + k);
+      if (BT.plots[k]) Plotly.react(el, tr, L, cfg); else { Plotly.newPlot(el, tr, L, cfg); BT.plots[k] = true; }
+    });
+    $("#bt-fitnote").textContent = "Weights fitted before " + BT.split + ": " +
+      btIds().map((id) => [id, R.fitP[id].w]).filter((p) => p[1] >= 0.5).sort((a, b) => b[1] - a[1])
+        .map(([id, w]) => DATA.backtest.params.find((q) => q.id === id).name + " " + Math.round(w)).join(", ") + ".";
+  }
+  function btSchedule() {
+    if (BT.raf) return;
+    BT.raf = requestAnimationFrame(() => { BT.raf = 0; btDraw(); });
+  }
+
+  function stepFor(lo, hi) {
+    const s = (hi - lo) / 100;
+    const p = Math.pow(10, Math.floor(Math.log10(s)));
+    return [1, 2, 5, 10].map((m) => m * p).find((v) => v >= s);
+  }
+  const decs = (step) => Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+  function unitTxt(v, u, dg) {
+    const n = Number(v).toFixed(dg);
+    return u === "%" ? n + "%" : u === "bp" ? n + " bp" : u === "pts" ? n + " pts" : u === "sd" ? n + " sd" : u === "days" ? n + " days" : n;
+  }
+  function btSliders() {
+    const root = $("#bt-sliders");
+    root.innerHTML = "";
+    DATA.backtest.params.forEach((q) => {
+      const cs = stepFor(q.center_range[0], q.center_range[1]), ks = stepFor(q.scale_range[0], q.scale_range[1]);
+      const dir = q.scale > 0 ? "higher = tailwind" : "higher = headwind";
+      const el = document.createElement("div");
+      el.className = "sl"; el.dataset.id = q.id;
+      el.innerHTML = `<div class="sl-h"><a href="#g-${q.id}" data-guide="${q.id}">${esc(q.name)}</a>` +
+        `<span>${q.first ? "data from " + q.first.slice(0, 4) : "no history"} · ${dir}</span></div>` +
+        `<label><span>Weight</span><input type="range" data-k="w" min="0" max="30" step="1"><output></output></label>` +
+        `<label><span>Neutral at</span><input type="range" data-k="c" min="${q.center_range[0]}" max="${q.center_range[1]}" step="${cs}"><output></output></label>` +
+        `<label><span>Full score at ±</span><input type="range" data-k="k" min="${q.scale_range[0]}" max="${q.scale_range[1]}" step="${ks}"><output></output></label>`;
+      $$("input", el).forEach((inp) => {
+        inp.setAttribute("aria-label", q.name + " " + inp.previousElementSibling.textContent.toLowerCase());
+        inp.addEventListener("input", () => {
+          const v = Number(inp.value), p = BT.P[q.id];
+          if (inp.dataset.k === "w") p.w = v;
+          else if (inp.dataset.k === "c") p.c = v;
+          else p.k = Math.sign(q.scale) * v;
+          btSyncOne(q.id);
+          btSchedule();
+        });
+      });
+      root.appendChild(el);
+    });
+    $$("#bt-sliders [data-guide]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); goGuide(a.dataset.guide); }));
+    btSyncAll();
+  }
+  function btSyncOne(id) {
+    const q = DATA.backtest.params.find((x) => x.id === id), p = BT.P[id], el = $(`#bt-sliders .sl[data-id="${id}"]`);
+    if (!el) return;
+    const cs = stepFor(q.center_range[0], q.center_range[1]), ks = stepFor(q.scale_range[0], q.scale_range[1]);
+    const set = (k, v, txt) => { const i = $(`input[data-k="${k}"]`, el); i.value = v; i.nextElementSibling.textContent = txt; };
+    set("w", p.w, String(Math.round(p.w)));
+    set("c", p.c, unitTxt(p.c, q.unit, decs(cs)));
+    set("k", Math.abs(p.k), unitTxt(Math.abs(p.k), q.unit, decs(ks)) + " away");
+    const dflt = BT.P0[id];
+    el.classList.toggle("changed", p.w !== dflt.w || p.c !== dflt.c || p.k !== dflt.k);
+  }
+  function btSyncAll() { btIds().forEach(btSyncOne); }
+
+  function buildBacktest() {
+    if (BT.built) { btDraw(); return; }
+    const B = DATA.backtest;
+    if (!B || !B.dates || !B.params) { $("#bt-lead").textContent = "No backtest data in this build."; return; }
+    BT.built = true;
+    BT.P0 = btDefaults();
+    BT.P = btDefaults();
+    const sm = B.summary && (B.summary["12"] || B.summary["6"]);
+    BT.split = sm ? Number(sm.split.slice(0, 4)) : 2013;
+    const sp = $("#bt-split");
+    sp.value = BT.split; $("#bt-split-out").textContent = BT.split;
+    sp.addEventListener("input", () => { BT.split = Number(sp.value); $("#bt-split-out").textContent = BT.split; btSchedule(); });
+    $$("[data-h]").forEach((b) => b.addEventListener("click", () => {
+      BT.h = Number(b.dataset.h);
+      $$("[data-h]").forEach((x) => x.classList.toggle("on", x === b));
+      btSchedule();
+    }));
+    $$("[data-nb]").forEach((b) => b.addEventListener("click", () => {
+      BT.nb = Number(b.dataset.nb);
+      $$("[data-nb]").forEach((x) => x.classList.toggle("on", x === b));
+      btSchedule();
+    }));
+    $("#bt-reset").addEventListener("click", () => { BT.P = btDefaults(); btSyncAll(); btSchedule(); });
+    $("#bt-fit").addEventListener("click", () => {
+      const fit = BT.last ? BT.last.fitP : null;
+      if (!fit) return;
+      btIds().forEach((id) => { BT.P[id].w = Math.round(fit[id].w); });
+      btSyncAll(); btSchedule();
+    });
+    btSliders();
+    btDraw();
+  }
 
   /* ------------------------------------------------------------ boot -- */
   let resizeTimer = null;
@@ -446,13 +815,13 @@
     resizeTimer = setTimeout(() => { setBarHeight(); sizeMap(); if (DATA) buildMap(); }, 150);
   });
   if (window.matchMedia) {
-    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (DATA) { buildMap(); redrawCharts(); } });
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (DATA) { buildMap(); redrawCharts(); if (BT.built) btDraw(); } });
   }
 
   function route() {
     const h = (location.hash || "").slice(1);
     if (h.startsWith("g-")) goGuide(h.slice(2));
-    else if (["charts", "guide", "about"].includes(h)) showTab(h, { keepHash: true });
+    else if (["charts", "backtest", "guide", "about"].includes(h)) showTab(h, { keepHash: true });
     else showTab("map", { keepHash: true });
   }
 

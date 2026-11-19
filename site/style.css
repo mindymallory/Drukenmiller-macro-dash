@@ -200,3 +200,29 @@ summary { cursor: pointer; color: var(--text-secondary); }
 .datatable th:first-child, .datatable td:first-child { text-align: left; }
 .table-wrap { overflow-x: auto; }
 .prose a { color: var(--series-1); }
+
+/* Backtest tab */
+.tabs { overflow-x: auto; scrollbar-width: none; }
+.btctl { position: static; padding: 0; }
+.btctl.mini { margin: 0; }
+.btctl .sep { margin-left: 12px; }
+.btctl input[type=range] { width: 160px; accent-color: var(--series-1); }
+.btctl output { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3em; }
+.bt-lead { font-size: 17px; margin: 4px 0 2px; max-width: 760px; }
+.bt-table td.oos { font-weight: 650; }
+.bt-table td.ins, .bt-table td.na { color: var(--text-muted); }
+.bt-table tr.mine td { background: color-mix(in srgb, var(--series-1) 8%, transparent); }
+.bt-grid { margin-top: 16px; }
+.plot.tall { height: 420px; }
+.warn { border: 1px solid color-mix(in srgb, var(--hw) 45%, var(--border)); background: color-mix(in srgb, var(--hw) 7%, var(--surface-1));
+  border-radius: 12px; padding: 4px 16px; margin: 8px 0 12px; max-width: 900px; }
+.warn p { margin: 10px 0; }
+.sliders { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 10px; }
+.sl { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.sl.changed { border-color: var(--series-1); }
+.sl-h { display: flex; flex-direction: column; margin-bottom: 4px; }
+.sl-h a { color: var(--text-primary); font-weight: 650; text-decoration: none; }
+.sl-h span { font-size: 12px; color: var(--text-muted); }
+.sl label { display: grid; grid-template-columns: 7.5em 1fr 6.5em; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.sl input[type=range] { width: 100%; accent-color: var(--series-1); }
+.sl output { font-variant-numeric: tabular-nums; text-align: right; color: var(--text-primary); }

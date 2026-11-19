@@ -5,7 +5,9 @@ A daily-refreshed tailwind/headwind map of the macro signals Stan Druckenmiller 
 ## How it works
 
 - `fetch/fetch_data.py` pulls every series, computes derived series, tile scores, the composite and its month-end history (macro data lagged to its release date), and writes `site/data/dashboard.json`.
-- `site/` is a static page (Plotly charts) that reads that JSON.
+- Each signal is a metric in natural units with a neutral point and a full-score distance: score = clip((metric − neutral) / distance, −1, 1). Defaults live in `TILES`.
+- The JSON also carries every signal's metric at each month-end since 2000 and the realized forward 6- and 12-month S&P 500 total return (`backtest`). The fetcher logs the default score's backtest stats (correlation, rank IC, Newey-West t, non-overlapping correlation, train/test split, IC-fitted weights, walk-forward) in the Actions job log.
+- `site/` is a static page (Plotly charts) that reads that JSON. Its Backtest tab recomputes the score and the stats in the browser as you move the weight and threshold sliders.
 - `.github/workflows/update.yml` runs the fetcher each weekday at 22:30 UTC, on every push to `main`, and on demand, then deploys `site/` to GitHub Pages. Data is not committed to the repo.
 
 ## Data sources
@@ -18,7 +20,8 @@ A daily-refreshed tailwind/headwind map of the macro signals Stan Druckenmiller 
 | Broad commodities | Invesco DB Commodity Index Tracking Fund (DBC) | Yahoo Finance |
 | Copper / gold | HG=F / GC=F | Yahoo Finance |
 | Breadth | Cumulative advances minus declines across current S&P 500 members; RSP/SPY | Yahoo Finance; constituents from datasets/s-and-p-500-companies |
-| Credit | ICE BofA HY OAS (BAMLH0A0HYM2), IG OAS (BAMLC0A0CM) | FRED |
+| Credit | ICE BofA HY OAS (BAMLH0A0HYM2; FRED serves only ~3 years), Moody's Baa minus 10-yr (BAA10Y), IG OAS (BAMLC0A0CM, chart only) | FRED |
+| Forward returns (backtest) | S&P 500 total return index (^SP500TR), falling back to price (^GSPC) | Yahoo Finance |
 | Cyclicals vs defensives | Equal-weight XLY, XLI, XLB, XLF vs XLP, XLU, XLV | Yahoo Finance |
 | Inflation | Core PCE (PCEPILFE), CPI (CPIAUCSL) y/y, 5-yr breakeven (T5YIE) | FRED |
 | Fed liquidity | Fed assets (WALCL) minus TGA (WTREGEN) minus reverse repo (RRPONTSYD) | FRED |

@@ -14,6 +14,7 @@
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button role="tab" data-tab="map" aria-selected="true">Map</button>
     <button role="tab" data-tab="charts" aria-selected="false">Charts</button>
+    <button role="tab" data-tab="backtest" aria-selected="false">Backtest</button>
     <button role="tab" data-tab="guide" aria-selected="false">Guide</button>
     <button role="tab" data-tab="about" aria-selected="false">About</button>
   </nav>
@@ -46,12 +47,56 @@
   </div>
 </section>
 
+<!-- ============================== BACKTEST ============================== -->
+<section id="tab-backtest" class="tab" role="tabpanel" hidden>
+  <div class="wrap">
+    <div class="prose">
+      <h1>Does the score line up with later returns?</h1>
+      <p>The overall score is recomputed at every month-end since 2000, using only data that had been published by then, and set against the S&amp;P 500's return over the following 6 or 12 months.</p>
+    </div>
+    <div class="controls btctl" role="group" aria-label="Backtest settings">
+      <span class="controls-label">Horizon</span>
+      <button data-h="6">6 months</button>
+      <button data-h="12" class="on">12 months</button>
+      <span class="controls-label sep">Test period starts</span>
+      <input type="range" id="bt-split" min="2006" max="2020" step="1" aria-label="First year of the test period"><output id="bt-split-out"></output>
+    </div>
+    <div id="bt-lead"></div>
+    <div id="bt-stats"></div>
+    <p class="caveat">Corr. is the Pearson correlation of the score with the next return over all months; rank IC is the same on ranks (Spearman), less swayed by a few extreme months. The Newey-West t uses errors that allow for the overlap between neighboring windows; above about 2 is the usual bar. Non-overlapping keeps every 6th or 12th month only. "Before" uses only months whose return window closed before the split, so no test-period return leaks into it. The fitted row's "before" number is in-sample by construction; only its "on" number is a fair test. Walk-forward refits the weights every January on returns already known at the time, so its whole record is out of sample.</p>
+
+    <div class="grid bt-grid">
+      <article class="card wide"><div class="card-head"><h3>Score and the return that followed</h3></div>
+        <p class="meta">Each month's forward return is plotted at the start of its window. Shaded: test period.</p>
+        <div id="bt-ts" class="plot tall"></div></article>
+      <article class="card"><div class="card-head"><h3>Score vs next return</h3></div><div id="bt-sc" class="plot"></div></article>
+      <article class="card"><div class="card-head"><h3>Average return by score bucket</h3>
+        <div class="controls btctl mini" role="group" aria-label="Buckets"><button data-nb="3">Thirds</button><button data-nb="5" class="on">Fifths</button></div></div>
+        <div id="bt-bk" class="plot"></div>
+        <p class="meta">Dotted line: average across all months.</p></article>
+    </div>
+
+    <h2 class="section-title">Sandbox: change the weights and thresholds</h2>
+    <div class="warn">
+      <p><b>Tuning here is in-sample, and it will overfit.</b> With 14 weights, 14 neutral points and 14 scales you can push the whole-sample correlation well up, and most of that gain is fitting the noise of one 26-year history, a few recessions and a few bull runs. It won't repeat.</p>
+      <p>The fairer check: set the test period, adjust only while looking at the "Before" column (or press <i>Fit before the split</i>), then read the "on" column once. The walk-forward row is the closest thing here to how a rule would have done in real time.</p>
+    </div>
+    <div class="controls btctl">
+      <button id="bt-reset">Reset to default</button>
+      <button id="bt-fit">Fit weights before the split</button>
+      <span class="caveat" id="bt-fitnote"></span>
+    </div>
+    <p class="caveat">Score for each signal = (reading − neutral point) ÷ full-score distance, capped at ±1. Signals with no data yet in a month drop out, and a month is scored only if signals with at least half the total weight have data. The map and the Guide always use the defaults.</p>
+    <div id="bt-sliders" class="sliders"></div>
+  </div>
+</section>
+
 <!-- ============================== GUIDE ============================== -->
 <section id="tab-guide" class="tab" role="tabpanel" hidden>
   <div class="wrap prose">
     <h1>How each tile is colored</h1>
     <p>Every signal is turned into a score from <b>−1</b> (full headwind for risk assets) to <b>+1</b> (full tailwind). A tile is a <b>tailwind ✓</b> at +0.2 or above, a <b>headwind ✕</b> at −0.2 or below, and <b>neutral</b> in between, so a reading sitting right on the line doesn't flip color day to day. Deeper color means a stronger score.</p>
-    <p>Each tile also shows, from the last five years of month-end data, how often it read tailwind, neutral and headwind. That is the check on the thresholds: a good threshold flips a few times a cycle, not every month, and doesn't sit on one side for years.</p>
+    <p>Each tile also shows, from month-end data back to 2000 (or as far as its data goes), how often it read tailwind, neutral and headwind. That is the check on the thresholds: a good threshold flips a few times a cycle, not every month, and doesn't sit on one side for years. The <a href="#backtest">Backtest</a> tab shows how the overall score lined up with later S&amp;P 500 returns and lets you change every weight and threshold.</p>
 
     <h2 id="g-overall">The overall read</h2>
     <p>The composite is the weighted average of the tile scores (weights below; tile size on the map). The stance needs two things, because Druckenmiller's rule is about <i>clarity</i>, not just direction: "when I have clarity, I like to play big… when I don't have clarity, I'll almost sometimes not play."</p>
@@ -62,7 +107,7 @@
       <li><b>No clarity</b>: in between. This is his "I'm not playing" zone.</li>
     </ul>
     <p>Why 0.35 and 60%: with five or six signals mildly positive and the rest mixed, the average lands around +0.2; it takes most of the weight pointing the same way, with conviction, to clear +0.35. The 60% agreement bar stops one or two extreme readings from producing a "bullish" call on their own.</p>
-    <p><b>Weights.</b> Liquidity and the Fed carry 43 of 100, because his framework puts monetary policy first (policy vs growth 15, Fed direction 12, Fed liquidity 8, inflation 8). Credit 15 (high yield 10, investment grade 5). Market internals 24 (A/D line 8, cyclicals vs defensives 7, participation 6, equal vs cap weight 3). Commodities and the dollar 18 (copper 6, broad commodities 5, dollar 4, copper/gold 3). Signals that overlap (copper inside broad commodities, equal weight inside participation) get smaller weights so the same fact isn't counted twice.</p>
+    <p><b>Weights.</b> Liquidity and the Fed carry 43 of 100, because his framework puts monetary policy first (policy vs growth 15, Fed direction 12, Fed liquidity 8, inflation 8). Credit 15 (high yield 10, Baa corporate 5). Market internals 24 (A/D line 8, cyclicals vs defensives 7, participation 6, equal vs cap weight 3). Commodities and the dollar 18 (copper 6, broad commodities 5, dollar 4, copper/gold 3). Signals that overlap (copper inside broad commodities, equal weight inside participation) get smaller weights so the same fact isn't counted twice.</p>
     <p>None of these numbers are Druckenmiller's own. They are this dashboard's attempt to encode the signals he named, and they are stated here so you can disagree with them.</p>
 
     <div id="guide-tiles">
@@ -75,10 +120,10 @@
       </article>
       <article class="g" id="g-fed_path" data-tile="fed_path">
         <h2>Fed direction</h2>
-        <p class="what">Two-year Treasury yield minus fed funds, averaged with the change in the Fed's target over the past six months.</p>
+        <p class="what">Two-year Treasury yield minus fed funds, plus how much fed funds has moved over the past six months.</p>
         <p><b>Why he watches it.</b> He reads the path, not just the level: in January "more interest rate cuts were supposedly coming"; now "the Fed is not cutting. They're hiking." The 2-year yield is the market's estimate of where policy goes over two years, so it moves before the Fed does.</p>
-        <p><b>Rule.</b> Two halves. Market half: −(2-yr minus fed funds) ÷ 0.75 pts. Realized half: −(6-month change in target) ÷ 0.5 pts. Tailwind when the market prices cuts and/or the Fed has been cutting.</p>
-        <p><b>Why that threshold.</b> 0.75 pts is three standard 25-bp moves, about what a market pricing a real easing or tightening cycle builds into the 2-year. 0.5 pts in six months is two moves, the point where a direction is established rather than a one-off. The FOMC median dots are listed under the chart for reference but not scored, since they update only four times a year.</p>
+        <p><b>Rule.</b> Reading = (2-yr minus fed funds) + (6-month change in fed funds, 30-day averages). Score = −reading ÷ 1 pt. Tailwind when the market prices cuts and the Fed has been cutting; full tailwind at a combined 1 pt (four 25-bp moves) of easing, priced or delivered.</p>
+        <p><b>Why that threshold.</b> One point is four standard moves: a market pricing a real easing or tightening cycle into the 2-year, a Fed that has already moved that far in six months, or a mix. Adding the two lets a Fed that is cutting while the market prices more cuts read as a clear tailwind. The FOMC median dots are listed under the chart for reference but not scored, since they update only four times a year.</p>
       </article>
       <article class="g" id="g-net_liq" data-tile="net_liq">
         <h2>Fed liquidity</h2>
@@ -100,19 +145,20 @@
         <p><b>Why he watches it.</b> Credit spreads were "very very tight" in his bullish setup and "widening" in his bearish one. Lenders to the weakest companies usually see trouble before equity holders do.</p>
         <p><b>Rule.</b> Score = −(3-month change in bp) ÷ 50 bp. Tailwind once spreads have tightened 10 bp or more; full headwind at 50 bp of widening.</p>
         <p><b>Why that threshold.</b> The direction is scored rather than the level because spreads can stay tight for years; it is the turn from tightening to widening that he flags. 50 bp in a quarter is a large move outside recessions; episodes of that much widening (2015–16, late 2018, 2022) all came with equity drawdowns.</p>
+        <p class="caveat">FRED now publishes only about the last three years of the ICE BofA spread series, so this tile drops out of the backtest before then; the Baa spread below carries credit for the earlier years.</p>
       </article>
-      <article class="g" id="g-ig" data-tile="ig">
-        <h2>Investment-grade spreads</h2>
-        <p class="what">ICE BofA US Corporate option-adjusted spread, change over 3 months.</p>
-        <p><b>Why he watches it.</b> The same signal from the safer end of the market; when even investment-grade spreads widen, the stress is broad.</p>
-        <p><b>Rule.</b> Score = −(3-month change in bp) ÷ 20 bp.</p>
-        <p><b>Why that threshold.</b> Investment-grade spreads move roughly 40% as much as high-yield spreads, so 20 bp here is about the same-sized shock as 50 bp in high yield.</p>
+      <article class="g" id="g-baa" data-tile="baa">
+        <h2>Corporate (Baa) spreads</h2>
+        <p class="what">Moody's Baa corporate bond yield minus the 10-year Treasury yield, change over 3 months.</p>
+        <p><b>Why he watches it.</b> The same credit signal from the lower end of investment grade, with daily history back to the 1980s. When even Baa spreads widen, the stress is broad.</p>
+        <p><b>Rule.</b> Score = −(3-month change in bp) ÷ 25 bp. Tailwind once spreads have tightened 5 bp or more; full headwind at 25 bp of widening.</p>
+        <p><b>Why that threshold.</b> Baa spreads move roughly half as much as high-yield spreads, so 25 bp here is about the same-sized shock as 50 bp in high yield.</p>
       </article>
       <article class="g" id="g-ad" data-tile="ad">
         <h2>A/D line confirms</h2>
         <p class="what">Whether the cumulative advance-decline line of S&amp;P 500 stocks is keeping up with the index.</p>
         <p><b>Why he watches it.</b> His clearest bearish tell: the advance-decline line "made its high back on August 14th despite the fact the averages making their high in October." When the index rises on fewer and fewer stocks, the rally is narrowing.</p>
-        <p><b>Rule.</b> Score = 1 − (trading days since the A/D line's 52-week high) ÷ 30. A fresh A/D high is a full tailwind; about five weeks without one turns it neutral; twelve weeks is a full headwind. If the index itself is more than a month off its high, the score is halved, since there is no rally to confirm.</p>
+        <p><b>Rule.</b> Score = (30 − trading days since the A/D line's 52-week high) ÷ 30. A fresh A/D high is a full tailwind; about five weeks without one turns it neutral; twelve weeks (60 trading days) is a full headwind.</p>
         <p><b>Why that threshold.</b> Short gaps happen all the time; a divergence lasting more than about six weeks (30 trading days) is what breadth analysts treat as meaningful. His own example ran about two months.</p>
         <p class="caveat">Built from today's S&amp;P 500 members, so it carries survivorship bias; the NYSE A/D line he likely watches has no reliable free feed.</p>
       </article>
@@ -187,7 +233,7 @@
     <p>Green tiles with ✓ look like his bullish January setup; red tiles with ✕ look like his November "I'm not playing" setup. The headline says what the whole picture adds up to under the rules on the Guide tab. A mixed map is itself the signal: no clarity.</p>
 
     <h2>Data</h2>
-    <p>FRED (Federal Reserve Bank of St. Louis), including ICE BofA credit spread series; Yahoo Finance via yfinance for futures, ETFs and S&amp;P 500 members. Refreshed each weekday evening by GitHub Actions. Macro data is used with its publication lag, so past readings show what was knowable at the time.</p>
+    <p>FRED (Federal Reserve Bank of St. Louis), including ICE BofA and Moody's credit spread series; Yahoo Finance via yfinance for futures, ETFs, the S&amp;P 500 total return index and S&amp;P 500 members. Refreshed each weekday evening by GitHub Actions. Macro data is used with its publication lag, so past readings show what was knowable at the time.</p>
     <p>This is a research tool, not investment advice, and it isn't affiliated with or endorsed by Stan Druckenmiller.</p>
     <p id="errors" class="caveat"></p>
   </div>

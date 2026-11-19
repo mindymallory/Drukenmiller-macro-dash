@@ -1,25 +1,28 @@
 """Build site/data/dashboard.json for the Druckenmiller macro map.
 
-Each indicator gets a continuous score s in [-1, +1]: +1 is a full tailwind
-for risk assets, -1 a full headwind, 0 neutral. Scores are combined with fixed
-weights into a composite and a stance (bullish / leaning / not playing).
-The rule and the reasoning behind every threshold are written up in the Guide
-tab of the site (site/index.html); keep the two in sync.
+Each indicator is reduced to one metric m in natural units (a rate gap in
+points, a spread change in bp, a % distance from the 200-day average, ...).
+Its score is s = clip((m - center) / scale, -1, 1): +1 is a full tailwind for
+risk assets, -1 a full headwind. Scores are combined with weights into a
+composite and a stance. TILES below holds the default center, scale and
+weight of every signal; the Guide tab on the site explains each one, and the
+Backtest tab lets you change them in the browser.
+
+History: every metric is recomputed at each month-end since 2000 using only
+data that would have been published by then (approximate release lags, see
+LAG). Those monthly metrics, plus realized forward S&P 500 total returns, are
+written to the JSON so the site can recompute scores and backtests client-side.
 
 Data sources (all free):
   * FRED. Uses the official API when FRED_API_KEY is set (a GitHub Actions
     secret, never committed); otherwise FRED's public fredgraph.csv download.
-  * Yahoo Finance via yfinance (no key): futures, ETFs, the S&P 500 index and
-    S&P 500 constituents (for breadth).
+  * Yahoo Finance via yfinance (no key): futures, ETFs, indices, S&P 500
+    total return index and S&P 500 constituents (for breadth).
   * S&P 500 constituent list from the datasets/s-and-p-500-companies repo,
     with Wikipedia as a fallback.
 
-Every series is fetched independently; failures are listed in "errors" and
-the affected tiles show as unavailable. The build fails only if no tile scores.
-
-History: the composite is recomputed at past month-ends. To avoid look-ahead,
-macro series are only used once they would have been published (approximate
-release lag per series, see LAG).
+Every series is fetched independently; failures are listed in "errors" and the
+affected tiles show as unavailable. The build fails only if no tile scores.
 """
 
 from __future__ import annotations
@@ -42,8 +45,9 @@ OUT = Path(__file__).resolve().parents[1] / "site" / "data" / "dashboard.json"
 UA = {"User-Agent": "macro-dashboard/1.0 (GitHub Actions; personal research dashboard)"}
 FRED_KEY = os.environ.get("FRED_API_KEY", "").strip()
 TODAY = pd.Timestamp(datetime.now(timezone.utc).date())
-MACRO_START = TODAY - pd.DateOffset(years=12)
-HIST_YEARS = 5
+FRED_START = pd.Timestamp("1997-01-01")
+MKT_START = "1998-01-01"
+BT_START = pd.Timestamp("2000-01-01")
 
 errors: list[str] = []
 
@@ -54,7 +58,7 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------- fetchers --
 
-def fred(series_id: str, start: pd.Timestamp = MACRO_START) -> pd.Series:
+def fred(series_id: str, start: pd.Timestamp = FRED_START) -> pd.Series:
     start_s = start.strftime("%Y-%m-%d")
     last_err = None
     for attempt in range(3):
@@ -79,7 +83,7 @@ def fred(series_id: str, start: pd.Timestamp = MACRO_START) -> pd.Series:
             if s.empty:
                 raise ValueError("no observations returned")
             s.name = series_id
-            log(f"FRED {series_id}: {len(s)} obs, last {s.index[-1].date()}")
+            log(f"FRED {series_id}: {len(s)} obs, {s.index[0].date()} to {s.index[-1].date()}")
             return s
         except Exception as e:  # noqa: BLE001
             last_err = e
@@ -87,7 +91,7 @@ def fred(series_id: str, start: pd.Timestamp = MACRO_START) -> pd.Series:
     raise RuntimeError(f"FRED {series_id}: {last_err}")
 
 
-def yahoo_close(tickers: list[str], years: int = 6) -> pd.DataFrame:
+def yahoo_close(tickers: list[str], start: str = MKT_START) -> pd.DataFrame:
     import yfinance as yf
 
     frames = []
@@ -95,7 +99,7 @@ def yahoo_close(tickers: list[str], years: int = 6) -> pd.DataFrame:
         chunk = tickers[i:i + 80]
         for attempt in range(3):
             try:
-                df = yf.download(chunk, period=f"{years}y", interval="1d",
+                df = yf.download(chunk, start=start, interval="1d",
                                  auto_adjust=True, progress=False, threads=True)
                 close = df["Close"] if isinstance(df.columns, pd.MultiIndex) else df[["Close"]]
                 if not isinstance(df.columns, pd.MultiIndex):
@@ -115,7 +119,7 @@ def yahoo_close(tickers: list[str], years: int = 6) -> pd.DataFrame:
     missing = [t for t in tickers if t not in out.columns or out[t].dropna().empty]
     for t in missing:
         try:
-            df = yf.download(t, period=f"{years}y", interval="1d",
+            df = yf.download(t, start=start, interval="1d",
                              auto_adjust=True, progress=False, threads=False)
             c = df["Close"]
             c = c[t] if isinstance(c, pd.DataFrame) else c
@@ -201,34 +205,67 @@ def d(ts):
     return f"{ts:%b} {ts.day}, {ts.year}"
 
 
-# --------------------------------------------------------------- scorers ---
-# Each scorer takes an as-of date and returns dict(s, reading) or None.
+# ------------------------------------------------------------- the signals --
+# (id, group, name, weight, center, scale, unit, slider range for center, for |scale|)
+# score = clip((metric - center) / scale). A negative scale means a higher
+# metric is a headwind. Weights sum to 100. Rationale in the Guide tab.
+TILES = [
+    ("policy_gap", "Liquidity & the Fed", "Policy vs growth", 15, 0.0, -2.0, "pts", (-3, 3), (0.5, 5)),
+    ("fed_path", "Liquidity & the Fed", "Fed direction", 12, 0.0, -1.0, "pts", (-1.5, 1.5), (0.25, 3)),
+    ("net_liq", "Liquidity & the Fed", "Fed liquidity", 8, 0.0, 1.5, "sd", (-1.5, 1.5), (0.5, 4)),
+    ("inflation", "Liquidity & the Fed", "Inflation pressure", 8, 2.5, -1.0, "%", (1.5, 4), (0.25, 3)),
+    ("hy", "Credit", "High-yield spreads", 10, 0.0, -50.0, "bp", (-50, 50), (10, 200)),
+    ("baa", "Credit", "Corporate (Baa) spreads", 5, 0.0, -25.0, "bp", (-40, 40), (5, 100)),
+    ("ad", "Market internals", "A/D line confirms", 8, 30.0, -30.0, "days", (5, 120), (10, 120)),
+    ("pct200", "Market internals", "Participation", 6, 50.0, 25.0, "%", (30, 70), (5, 50)),
+    ("cycdef", "Market internals", "Cyclicals vs defensives", 7, 0.0, 4.0, "%", (-5, 5), (1, 15)),
+    ("ewcw", "Market internals", "Equal vs cap weight", 3, 0.0, 3.0, "%", (-4, 4), (0.5, 10)),
+    ("copper", "Commodities & dollar", "Copper", 6, 0.0, 10.0, "%", (-10, 10), (2, 30)),
+    ("commod", "Commodities & dollar", "Broad commodities", 5, 0.0, 7.0, "%", (-10, 10), (2, 25)),
+    ("cugold", "Commodities & dollar", "Copper / gold", 3, 0.0, 8.0, "%", (-10, 10), (2, 30)),
+    ("dollar", "Commodities & dollar", "Dollar", 4, 0.0, -4.0, "%", (-5, 5), (1, 12)),
+]
+assert sum(t[3] for t in TILES) == 100
+STATE_CUT = 0.2
+TILE_IDS = [t[0] for t in TILES]
 
-def make_scorers(F, Y, B):
+
+def score_of(tid, m):
+    t = next(x for x in TILES if x[0] == tid)
+    return None if m is None else clip((m - t[4]) / t[5])
+
+
+def state_of(s):
+    if s is None:
+        return "unavailable"
+    return "tailwind" if s >= STATE_CUT else "headwind" if s <= -STATE_CUT else "neutral"
+
+
+def make_metrics(F, Y, B):
+    """Each function returns (metric, reading) as of a date, or None."""
+
     def policy_gap(asof):
         ff = avail(F["effr"], asof)
         gdp = avail(F["gdp"], asof, LAG["GDP"])
         if ff is None or gdp is None or len(gdp) < 5:
             return None
+        ffm = float(ff.iloc[-30:].mean())
         n = float(yoy(gdp, 4).iloc[-1])
-        g = float(ff.iloc[-1]) - n
-        return {"s": clip(-g / 2.0),
-                "reading": f"Fed funds {ff.iloc[-1]:.2f}% vs nominal GDP growth {n:.1f}%: gap {g:+.1f} pts"}
+        g = ffm - n
+        return g, f"Fed funds {ffm:.2f}% vs nominal GDP growth {n:.1f}%: gap {g:+.1f} pts"
 
     def fed_path(asof):
-        two, ff, up = avail(F["dgs2"], asof), avail(F["effr"], asof), avail(F["upper"], asof)
+        two, ff = avail(F["dgs2"], asof), avail(F["effr"], asof)
         if two is None or ff is None:
             return None
-        spread = float(two.iloc[-1]) - float(ff.iloc[-1])
-        parts, move_txt = [clip(-spread / 0.75)], ""
-        if up is not None:
-            prev = value_at(up, asof - pd.DateOffset(months=6))
-            if prev is not None:
-                move = float(up.iloc[-1]) - prev[0]
-                parts.append(clip(-move / 0.5))
-                move_txt = f"; target {move * 100:+.0f} bp over 6 months"
-        return {"s": float(np.mean(parts)),
-                "reading": f"2-yr Treasury {spread * 100:+.0f} bp vs fed funds{move_txt}"}
+        ffm = float(ff.iloc[-30:].mean())
+        prev = ff[ff.index <= asof - pd.DateOffset(months=6)]
+        if len(prev) < 30:
+            return None
+        move = ffm - float(prev.iloc[-30:].mean())
+        spread = float(two.iloc[-1]) - ffm
+        m = spread + move
+        return m, f"2-yr Treasury {spread * 100:+.0f} bp vs fed funds; fed funds {move * 100:+.0f} bp over 6 months"
 
     def net_liq(asof):
         nl = B.get("net_liq")
@@ -239,124 +276,106 @@ def make_scorers(F, Y, B):
         if len(chg) < 104:
             return None
         sd = float(chg.iloc[-260:].std())
-        c = float(chg.iloc[-1])
         if not sd:
             return None
+        c = float(chg.iloc[-1])
         z = c / sd
-        return {"s": clip(z / 1.5),
-                "reading": f"Net Fed liquidity {c:+,.0f} bn over 13 weeks ({z:+.1f} sd)"}
+        return z, f"Net Fed liquidity {c:+,.0f} bn over 13 weeks ({z:+.1f} sd)"
 
     def inflation(asof):
         p = avail(F["core_pce"], asof, LAG["PCEPILFE"])
         if p is None or len(p) < 13:
             return None
         pi = float(yoy(p, 12).iloc[-1])
-        return {"s": clip((2.5 - pi) / 1.0), "reading": f"Core PCE inflation {pi:.1f}% (target 2%)"}
+        return pi, f"Core PCE inflation {pi:.1f}% (target 2%)"
 
-    def spread_trend(key, scale_bp, label):
+    def spread_chg(key, label):
         def f(asof):
             h = avail(F[key], asof)
             if h is None:
                 return None
             prev = value_at(h, asof - pd.DateOffset(months=3))
-            if prev is None:
+            if prev is None or (asof - pd.DateOffset(months=3) - prev[1]).days > 10:
                 return None
             lvl = float(h.iloc[-1])
             chg = (lvl - prev[0]) * 100
-            return {"s": clip(-chg / scale_bp),
-                    "reading": f"{label} {lvl:.2f}%, {chg:+.0f} bp over 3 months"}
+            return chg, f"{label} {lvl:.2f}%, {chg:+.0f} bp over 3 months"
         return f
 
-    def ad_confirm(asof):
+    def ad_days(asof):
         ad, ix = B.get("ad"), Y.get("^GSPC")
-        if ad is None or ix is None:
+        if ad is None:
             return None
-        ad, ix = ad[ad.index <= asof].iloc[-252:], ix[ix.index <= asof].iloc[-252:]
-        if len(ad) < 200 or len(ix) < 200:
+        a = ad[ad.index <= asof].iloc[-252:]
+        if len(a) < 200 or (asof - a.index[-1]).days > 10:
             return None
-        ad_hi, ix_hi = ad.idxmax(), ix.idxmax()
-        d_ad = int((ad.index > ad_hi).sum())
-        d_ix = int((ix.index > ix_hi).sum())
-        s = clip(1 - d_ad / 30.0)
-        if d_ix > 20:  # index itself is off its high, so the test says less
-            s *= 0.5
-        return {"s": s, "reading": f"A/D line last high {d(ad_hi)}; S&P 500 last high {d(ix_hi)}"}
+        hi = a.idxmax()
+        days = int((a.index > hi).sum())
+        txt = f"A/D line last 52-week high {d(hi)}"
+        if ix is not None:
+            x = ix[ix.index <= asof].iloc[-252:]
+            if len(x):
+                txt += f"; S&P 500 last high {d(x.idxmax())}"
+        return float(days), txt
 
     def pct_above(asof):
         p = B.get("pct200")
         if p is None:
             return None
         p = p[p.index <= asof]
-        if p.empty:
+        if p.empty or (asof - p.index[-1]).days > 10:
             return None
         v = float(p.iloc[-1])
-        return {"s": clip((v - 50) / 25.0), "reading": f"{v:.0f}% of S&P 500 stocks above their 200-day average"}
+        return v, f"{v:.0f}% of S&P 500 stocks above their 200-day average"
 
-    def ratio_change(key, days, scale_pct, label):
+    def ratio_chg(key, days, label):
         def f(asof):
             r = B.get(key)
             if r is None:
                 return None
             x = r[r.index <= asof]
-            if len(x) <= days:
+            if len(x) <= days or (asof - x.index[-1]).days > 10:
                 return None
             c = (float(x.iloc[-1]) / float(x.iloc[-1 - days]) - 1) * 100
-            return {"s": clip(c / scale_pct), "reading": f"{label} {c:+.1f}% over 3 months"}
+            return c, f"{label} {c:+.1f}% over 3 months"
         return f
 
-    def trend(get, scale, label, invert=False):
+    def trend(get, label):
         def f(asof):
             series = get()
             if series is None:
                 return None
             x = series[series.index <= asof]
-            if len(x) < 220:
+            if len(x) < 220 or (asof - x.index[-1]).days > 10:
                 return None
-            dev = float(x.iloc[-1]) / float(x.iloc[-200:].mean()) - 1
+            dev = (float(x.iloc[-1]) / float(x.iloc[-200:].mean()) - 1) * 100
             off = (float(x.iloc[-1]) / float(x.iloc[-252:].max()) - 1) * 100
-            return {"s": clip((-dev if invert else dev) / scale),
-                    "reading": f"{label} {dev * 100:+.1f}% vs its 200-day average, {off:.1f}% from 52-week high"}
+            return dev, f"{label} {dev:+.1f}% vs its 200-day average, {off:.1f}% from 52-week high"
         return f
 
     return {
         "policy_gap": policy_gap, "fed_path": fed_path, "net_liq": net_liq, "inflation": inflation,
-        "hy": spread_trend("hy", 50, "High-yield spread"),
-        "ig": spread_trend("ig", 20, "Investment-grade spread"),
-        "ad": ad_confirm, "pct200": pct_above,
-        "cycdef": trend(lambda: B.get("cycdef"), 0.04, "Cyclicals/defensives ratio"),
-        "ewcw": ratio_change("rsp_spy", 63, 3.0, "Equal-weight vs cap-weight S&P 500"),
-        "copper": trend(lambda: Y.get("HG=F"), 0.10, "Copper"),
-        "commod": trend(lambda: Y.get("DBC"), 0.07, "Broad commodities (DBC)"),
-        "cugold": trend(lambda: B.get("cugold"), 0.08, "Copper/gold ratio"),
-        "dollar": trend(lambda: Y.get("DX-Y.NYB"), 0.04, "Dollar index", invert=True),
+        "hy": spread_chg("hy", "High-yield spread"),
+        "baa": spread_chg("baa", "Baa corporate spread over 10-yr Treasury"),
+        "ad": ad_days, "pct200": pct_above,
+        "cycdef": trend(lambda: B.get("cycdef"), "Cyclicals/defensives ratio"),
+        "ewcw": ratio_chg("rsp_spy", 63, "Equal-weight vs cap-weight S&P 500"),
+        "copper": trend(lambda: Y.get("HG=F"), "Copper"),
+        "commod": trend(lambda: Y.get("DBC"), "Broad commodities (DBC)"),
+        "cugold": trend(lambda: B.get("cugold"), "Copper/gold ratio"),
+        "dollar": trend(lambda: Y.get("DX-Y.NYB"), "Dollar index"),
     }
 
 
-# (id, group, name, weight). Weights sum to 100; rationale in the Guide tab.
-TILES = [
-    ("policy_gap", "Liquidity & the Fed", "Policy vs growth", 15),
-    ("fed_path", "Liquidity & the Fed", "Fed direction", 12),
-    ("net_liq", "Liquidity & the Fed", "Fed liquidity", 8),
-    ("inflation", "Liquidity & the Fed", "Inflation pressure", 8),
-    ("hy", "Credit", "High-yield spreads", 10),
-    ("ig", "Credit", "Investment-grade spreads", 5),
-    ("ad", "Market internals", "A/D line confirms", 8),
-    ("pct200", "Market internals", "Participation", 6),
-    ("cycdef", "Market internals", "Cyclicals vs defensives", 7),
-    ("ewcw", "Market internals", "Equal vs cap weight", 3),
-    ("copper", "Commodities & dollar", "Copper", 6),
-    ("commod", "Commodities & dollar", "Broad commodities", 5),
-    ("cugold", "Commodities & dollar", "Copper / gold", 3),
-    ("dollar", "Commodities & dollar", "Dollar", 4),
-]
-assert sum(t[3] for t in TILES) == 100
-STATE_CUT = 0.2
-
-
-def state_of(s):
-    if s is None:
-        return "unavailable"
-    return "tailwind" if s >= STATE_CUT else "headwind" if s <= -STATE_CUT else "neutral"
+def eval_metrics(metrics, asof):
+    out = {}
+    for tid in TILE_IDS:
+        try:
+            out[tid] = metrics[tid](asof)
+        except Exception as e:  # noqa: BLE001
+            log(f"metric {tid} @ {asof.date()}: {e}")
+            out[tid] = None
+    return out
 
 
 def stance(score, agree):
@@ -377,29 +396,126 @@ def stance(score, agree):
             "line": "The signals conflict. Without clarity he preserves capital and waits."}
 
 
-def composite(scorers, asof):
+def composite(mvals, weights=None):
+    """mvals: {tid: (metric, reading) or None}. Returns (summary or None, tiles)."""
     tiles, num, den, tw, hw = [], 0.0, 0.0, 0.0, 0.0
-    for tid, group, name, w in TILES:
-        r = None
-        try:
-            r = scorers[tid](asof)
-        except Exception as e:  # noqa: BLE001
-            log(f"score {tid} @ {asof.date()}: {e}")
-        s = None if r is None or r.get("s") is None or math.isnan(r["s"]) else float(r["s"])
-        if s is not None:
+    for tid, group, name, w, *_ in TILES:
+        w = w if weights is None else weights[tid]
+        r = mvals.get(tid)
+        s = score_of(tid, r[0]) if r else None
+        if s is not None and math.isnan(s):
+            s = None
+        if s is not None and w > 0:
             num += w * s
             den += w
             tw += w if s >= STATE_CUT else 0
             hw += w if s <= -STATE_CUT else 0
         tiles.append({"id": tid, "group": group, "name": name, "weight": w,
                       "s": None if s is None else round(s, 3), "state": state_of(s),
-                      "reading": r["reading"] if r else "Data unavailable"})
-    if den < 50:
+                      "reading": r[1] if r else "Data unavailable"})
+    total = sum((w if weights is None else weights[t]) for t, _, _, w, *_ in TILES)
+    if den < 0.5 * total or den == 0:
         return None, tiles
     score = num / den
     agree = (tw if score >= 0 else hw) / den
     return {"score": round(score, 3), "tail_w": round(tw / den, 3), "head_w": round(hw / den, 3),
-            "agreement": round(agree, 3), "coverage": round(den / 100, 2), **stance(score, agree)}, tiles
+            "agreement": round(agree, 3), "coverage": round(den / total, 2), **stance(score, agree)}, tiles
+
+
+# --------------------------------------------------------------- backtest --
+# Mirrors the client-side code in site/app.js; used to log the default fit.
+
+def nw_t(x, y, lags):
+    """t-stat of the slope in y = a + b x with Newey-West (Bartlett) errors."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    X = np.column_stack([np.ones_like(x), x])
+    XtX_inv = np.linalg.inv(X.T @ X)
+    b = XtX_inv @ X.T @ y
+    u = (y - X @ b)[:, None] * X
+    S = u.T @ u
+    for l in range(1, lags + 1):
+        w = 1 - l / (lags + 1)
+        G = u[l:].T @ u[:-l]
+        S += w * (G + G.T)
+    V = XtX_inv @ S @ XtX_inv
+    return float(b[1] / math.sqrt(V[1, 1]))
+
+
+def corr(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    return float(np.corrcoef(a, b)[0, 1]) if len(a) > 2 else float("nan")
+
+
+def rank_ic(a, b):
+    return corr(pd.Series(a).rank().values, pd.Series(b).rank().values)
+
+
+def bt_scores(bt, weights):
+    out = []
+    for i in range(len(bt["dates"])):
+        num = den = 0.0
+        for tid, *_ in TILES:
+            m = bt["metrics"][tid][i]
+            w = weights[tid]
+            if m is None or w <= 0:
+                continue
+            num += w * score_of(tid, m)
+            den += w
+        tot = sum(weights.values())
+        out.append(num / den if den and den >= 0.5 * tot else None)
+    return out
+
+
+def ic_weights(bt, rows, h):
+    ws = {}
+    fwd = bt[f"fwd{h}"]
+    for tid, *_ in TILES:
+        pairs = [(score_of(tid, bt["metrics"][tid][i]), fwd[i]) for i in rows
+                 if bt["metrics"][tid][i] is not None and fwd[i] is not None]
+        if len(pairs) < 24:
+            ws[tid] = 0.0
+            continue
+        c = corr([p[0] for p in pairs], [p[1] for p in pairs])
+        ws[tid] = max(0.0, c) if not math.isnan(c) else 0.0
+    tot = sum(ws.values())
+    return {k: (v / tot * 100 if tot else 100 / len(ws)) for k, v in ws.items()}
+
+
+def bt_summary(bt, h):
+    dates = [pd.Timestamp(x) for x in bt["dates"]]
+    fwd = bt[f"fwd{h}"]
+    w0 = {t[0]: t[3] for t in TILES}
+    sc = bt_scores(bt, w0)
+    idx = [i for i in range(len(dates)) if sc[i] is not None and fwd[i] is not None]
+    if len(idx) < 36:
+        return None
+    x, y = [sc[i] for i in idx], [fwd[i] for i in idx]
+    split = dates[idx[len(idx) // 2]]
+    split = pd.Timestamp(year=split.year, month=1, day=1)
+    train = [i for i in idx if dates[i] + pd.DateOffset(months=h) <= split]
+    test = [i for i in idx if dates[i] >= split]
+    non = idx[::h]
+    fit = ic_weights(bt, train, h)
+    sc_fit = bt_scores(bt, fit)
+    # walk-forward: refit each January on rows whose forward window has closed
+    wf = [None] * len(dates)
+    cur = None
+    for i, dt in enumerate(dates):
+        if dt.month == 1 or cur is None:
+            rows = [j for j in idx if dates[j] + pd.DateOffset(months=h) <= dt]
+            cur = ic_weights(bt, rows, h) if len(rows) >= 60 else None
+        if cur is not None:
+            wf[i] = bt_scores({"dates": [bt["dates"][i]], "metrics": {k: [v[i]] for k, v in bt["metrics"].items()}}, cur)[0]
+    wfi = [i for i in idx if wf[i] is not None]
+    r = lambda ii, s: round(corr([s[i] for i in ii], [fwd[i] for i in ii]), 3) if len(ii) > 5 else None
+    return {
+        "h": h, "n": len(idx), "start": bt["dates"][idx[0]], "end": bt["dates"][idx[-1]],
+        "corr": round(corr(x, y), 3), "rank_ic": round(rank_ic(x, y), 3), "nw_t": round(nw_t(x, y, h - 1), 2),
+        "nonoverlap_corr": r(non, sc), "nonoverlap_n": len(non),
+        "split": split.strftime("%Y-%m-%d"), "train_corr": r(train, sc), "test_corr": r(test, sc),
+        "fitted_test_corr": r(test, sc_fit), "fitted_weights": {k: round(v, 1) for k, v in fit.items()},
+        "walkforward_corr": r(wfi, wf), "walkforward_n": len(wfi),
+    }
 
 
 # --------------------------------------------------------------- charts ----
@@ -447,23 +563,24 @@ def main() -> int:
     ids = {
         "effr": "DFF", "upper": "DFEDTARU", "gdp": "GDP", "dgs2": "DGS2", "dgs10": "DGS10",
         "t10y2y": "T10Y2Y", "sep_median": "FEDTARMD", "sep_lr": "FEDTARMDLR",
-        "ig": "BAMLC0A0CM", "hy": "BAMLH0A0HYM2", "core_pce": "PCEPILFE", "cpi": "CPIAUCSL",
+        "ig": "BAMLC0A0CM", "hy": "BAMLH0A0HYM2", "baa": "BAA10Y",
+        "core_pce": "PCEPILFE", "cpi": "CPIAUCSL",
         "be5": "T5YIE", "walcl": "WALCL", "tga": "WTREGEN", "rrp": "RRPONTSYD",
         "debt_gdp": "GFDEGDQ188S", "us10_m": "IRLTLT01USM156N", "fr10_m": "IRLTLT01FRM156N",
     }
     F = {}
     for k, sid in ids.items():
-        start = MACRO_START
+        start = FRED_START
         if k in {"debt_gdp", "gdp"}:
-            start = TODAY - pd.DateOffset(years=30)
+            start = pd.Timestamp("1990-01-01")
         elif k in {"sep_median", "sep_lr"}:
             start = TODAY - pd.DateOffset(years=3)
         F[k] = safe(lambda sid=sid, start=start: fred(sid, start), f"FRED {sid}")
 
-    mkt = ["HG=F", "GC=F", "CL=F", "NG=F", "ZS=F", "ZC=F", "DBC", "^GSPC", "RSP", "SPY",
+    mkt = ["HG=F", "GC=F", "CL=F", "NG=F", "ZS=F", "ZC=F", "DBC", "^GSPC", "^SP500TR", "RSP", "SPY",
            "DX-Y.NYB", "XLY", "XLI", "XLB", "XLF", "XLP", "XLU", "XLV"]
     Y = {t: None for t in mkt}
-    closes = safe(lambda: yahoo_close(mkt, years=7), "Yahoo market data")
+    closes = safe(lambda: yahoo_close(mkt), "Yahoo market data")
     if closes is not None:
         for t in mkt:
             Y[t] = clean(closes[t]) if t in closes.columns else None
@@ -475,15 +592,16 @@ def main() -> int:
 
     def build_breadth():
         tick = sp500_tickers()
-        px = yahoo_close(tick, years=HIST_YEARS + 2).dropna(axis=1, how="all")
-        n = px.shape[1]
+        px = yahoo_close(tick, start=MKT_START).dropna(axis=1, how="all")
         chg = px.diff()
-        net = ((chg > 0).sum(axis=1) - (chg < 0).sum(axis=1))[chg.notna().sum(axis=1) >= 0.8 * n].iloc[1:]
+        n_ok = chg.notna().sum(axis=1)
+        net = ((chg > 0).sum(axis=1) - (chg < 0).sum(axis=1))[n_ok >= 300].iloc[1:]
         m200 = px.rolling(200).mean()
         valid = m200.notna().sum(axis=1)
-        pct = ((px > m200).sum(axis=1) / valid * 100)[valid >= 0.8 * n]
-        log(f"Breadth: {n} of {len(tick)} constituents, A/D {len(net)} days, %>200d {len(pct)} days")
-        return net.cumsum(), pct, n
+        pct = ((px > m200).sum(axis=1) / valid * 100)[valid >= 300]
+        log(f"Breadth: {px.shape[1]} of {len(tick)} constituents; A/D from {net.index[0].date()}, "
+            f"%>200d from {pct.index[0].date()}")
+        return net.cumsum(), pct, int(px.shape[1])
 
     br = safe(build_breadth, "S&P 500 breadth")
     B["ad"], B["pct200"], n_const = br if br else (None, None, None)
@@ -507,27 +625,72 @@ def main() -> int:
     if all(F[k] is not None for k in ("walcl", "tga", "rrp")):
         B["net_liq"] = safe(build_net_liq, "Net liquidity")
 
-    scorers = make_scorers(F, Y, B)
+    metrics = make_metrics(F, Y, B)
 
-    # ---- today, a year ago, monthly history
-    now_comp, tiles = composite(scorers, TODAY)
-    ago_comp, ago_tiles = composite(scorers, TODAY - pd.DateOffset(years=1))
+    # ---- today and a year ago
+    now_m = eval_metrics(metrics, TODAY)
+    now_comp, tiles = composite(now_m)
+    ago_comp, ago_tiles = composite(eval_metrics(metrics, TODAY - pd.DateOffset(years=1)))
     for t, a in zip(tiles, ago_tiles):
         t["s_ago"], t["state_ago"] = a["s"], a["state"]
-    hist, counts = [], {t[0]: {"tailwind": 0, "neutral": 0, "headwind": 0} for t in TILES}
-    dates = list(pd.date_range(TODAY - pd.DateOffset(years=HIST_YEARS), TODAY, freq="ME"))
-    for asof in dates + [TODAY]:
-        c, ts = composite(scorers, asof)
-        for t in ts:
-            if t["state"] in counts[t["id"]]:
-                counts[t["id"]][t["state"]] += 1
-        if c:
-            hist.append({"date": asof.strftime("%Y-%m-%d"), "score": c["score"],
-                         "agreement": c["agreement"], "stance": c["stance"]})
+        t["metric"] = None if now_m[t["id"]] is None else round(now_m[t["id"]][0], 4)
+
+    # ---- monthly history since 2000 (metrics, forward returns)
+    dates = list(pd.date_range(BT_START, TODAY, freq="ME"))
+    if dates[-1] != TODAY:
+        dates.append(TODAY)
+    bt = {"dates": [x.strftime("%Y-%m-%d") for x in dates], "metrics": {t: [] for t in TILE_IDS}}
+    for asof in dates:
+        mv = eval_metrics(metrics, asof)
+        for tid in TILE_IDS:
+            bt["metrics"][tid].append(None if mv[tid] is None else round(float(mv[tid][0]), 4))
+    ret_name = "S&P 500 total return"
+    px = Y.get("^SP500TR")
+    if px is None:
+        px, ret_name = Y.get("^GSPC"), "S&P 500 price (total return unavailable this run)"
+    for h in (6, 12):
+        fw = []
+        for asof in dates:
+            end = asof + pd.DateOffset(months=h)
+            if px is None or end > px.index[-1]:
+                fw.append(None)
+                continue
+            a, b = value_at(px, asof), value_at(px, end)
+            fw.append(None if a is None or b is None else round((b[0] / a[0] - 1) * 100, 3))
+        bt[f"fwd{h}"] = fw
+    bt["ret_name"] = ret_name
+    bt["params"] = [{"id": t[0], "name": t[2], "group": t[1], "weight": t[3], "center": t[4], "scale": t[5],
+                     "unit": t[6], "center_range": list(t[7]), "scale_range": list(t[8]),
+                     "first": next((bt["dates"][i] for i, v in enumerate(bt["metrics"][t[0]]) if v is not None), None)}
+                    for t in TILES]
+    w0 = {t[0]: t[3] for t in TILES}
+    default_scores = bt_scores(bt, w0)
+    hist = []
+    for i, x in enumerate(default_scores):
+        if x is not None:
+            hist.append({"date": bt["dates"][i], "score": round(x, 3)})
+    summaries = {}
+    for h in (6, 12):
+        sm = safe(lambda h=h: bt_summary(bt, h), f"backtest {h}m")
+        if sm:
+            summaries[str(h)] = sm
+            log(f"Backtest {h}m ({sm['start']}..{sm['end']}, n={sm['n']}): corr {sm['corr']}, rank IC {sm['rank_ic']}, "
+                f"NW t {sm['nw_t']}, non-overlap corr {sm['nonoverlap_corr']} (n={sm['nonoverlap_n']}); "
+                f"split {sm['split']}: train {sm['train_corr']}, test {sm['test_corr']}, "
+                f"IC-fitted on train -> test {sm['fitted_test_corr']}; walk-forward {sm['walkforward_corr']} "
+                f"(n={sm['walkforward_n']})")
+    bt["summary"] = summaries
+
+    # per-tile share of months in each state since the tile's data starts
     for t in tiles:
-        c = counts[t["id"]]
-        n = sum(c.values())
-        t["history"] = {"months": n, **{k: round(v / n, 3) for k, v in c.items()}} if n else None
+        ss = [score_of(t["id"], m) for m in bt["metrics"][t["id"]] if m is not None]
+        if ss:
+            st = [state_of(x) for x in ss]
+            first = next(bt["dates"][i] for i, v in enumerate(bt["metrics"][t["id"]]) if v is not None)
+            t["history"] = {"months": len(st), "since": first[:4],
+                            **{k: round(st.count(k) / len(st), 3) for k in ("tailwind", "neutral", "headwind")}}
+        else:
+            t["history"] = None
 
     # ---- charts
     d5, d10, d30 = (TODAY - pd.DateOffset(years=n) for n in (5, 10, 30))
@@ -575,19 +738,22 @@ def main() -> int:
         ]},
         {"title": "Credit", "charts": [
             {"id": "hy", "tile": "hy", "title": "High-yield option-adjusted spread", "unit": "%",
-             "series": S([ser("ICE BofA US High Yield OAS", F["hy"], d5, 2)]), "stats": S([stat("HY spread", F["hy"], "%")])},
-            {"id": "ig", "tile": "ig", "title": "Investment-grade option-adjusted spread", "unit": "%",
+             "series": S([ser("ICE BofA US High Yield OAS", F["hy"], d5, 2)]), "stats": S([stat("HY spread", F["hy"], "%")]),
+             "note": "FRED carries only about the last three years of the ICE BofA spread series."},
+            {"id": "baa", "tile": "baa", "title": "Moody's Baa corporate yield minus 10-yr Treasury", "unit": "%",
+             "series": S([ser("Baa minus 10-yr", F["baa"], d10, 2)]), "stats": S([stat("Baa spread", F["baa"], "%")])},
+            {"id": "ig", "tile": None, "title": "Investment-grade option-adjusted spread (context)", "unit": "%",
              "series": S([ser("ICE BofA US Corporate OAS", F["ig"], d5, 2)]), "stats": S([stat("IG spread", F["ig"], "%")])},
         ]},
         {"title": "Market internals", "charts": [
             {"id": "ad", "tile": "ad", "title": "S&P 500 advance-decline line", "unit": "",
-             "series": S([ser("Cumulative advances minus declines", B.get("ad"), None, 0)]),
-             "note": (f"Built from the {n_const} current S&P 500 members (survivorship-biased), as a stand-in "
-                      "for the NYSE A/D line, which has no reliable free feed.") if n_const else None},
+             "series": S([ser("Cumulative advances minus declines", B.get("ad"), d10, 0)]),
+             "note": (f"Built from the {n_const} current S&P 500 members (survivorship-biased, more so further back), "
+                      "as a stand-in for the NYSE A/D line, which has no reliable free feed.") if n_const else None},
             {"id": "spx", "tile": None, "title": "S&P 500 index", "unit": "",
              "series": S([ser("S&P 500", Y.get("^GSPC"), d5, 2)]), "stats": S([stat("S&P 500", Y.get("^GSPC"), "", 0)])},
             {"id": "pct200", "tile": "pct200", "title": "Share of S&P 500 stocks above their 200-day average", "unit": "%",
-             "series": S([ser("% above 200-day", B.get("pct200"), None, 1)]),
+             "series": S([ser("% above 200-day", B.get("pct200"), d10, 1)]),
              "refs": [{"y": 50}], "stats": S([stat("% above 200-day", B.get("pct200"), "%", 0)])},
             {"id": "cycdef", "tile": "cycdef", "title": "Cyclicals vs defensives", "unit": "",
              "series": S([ser("XLY+XLI+XLB+XLF vs XLP+XLU+XLV", B.get("cycdef"), d5, 2),
@@ -622,24 +788,11 @@ def main() -> int:
     d3 = TODAY - pd.DateOffset(years=3)
 
     def fmtv(v, kind):
-        if kind == "pts":
-            return f"{v:+.1f} pts"
-        if kind == "%":
-            return f"{v:.1f}%"
-        if kind == "bp":
-            return f"{v:.2f}%"
-        if kind == "bn":
-            return f"{v:+,.0f} bn"
-        if kind == "int":
-            return f"{v:,.0f}"
-        if kind == "r4":
-            return f"{v:.3f}"
-        if kind == "$":
-            return f"${v:,.2f}"
-        return f"{v:,.2f}"
+        return {"pts": f"{v:+.1f} pts", "%": f"{v:.1f}%", "lvl": f"{v:.2f}%", "bn": f"{v:+,.0f} bn",
+                "$": f"${v:,.2f}", "int": f"{v:,.0f}", "r4": f"{v:.3f}"}.get(kind, f"{v:,.2f}")
 
-    def spark(main, kind, ref=None, with_ma=False, digits=3, label=None):
-        m = clean(main)
+    def spark(main_s, kind, ref=None, with_ma=False, digits=3, label=None):
+        m = clean(main_s)
         if m is None:
             return None
         sr = S([ser(label or "Value", m, d3, digits),
@@ -654,8 +807,8 @@ def main() -> int:
         "fed_path": lambda: spark(spread2, "pts", 0, label="2-yr minus fed funds"),
         "net_liq": lambda: spark(nl13, "bn", 0, digits=0, label="13-wk change, $ bn"),
         "inflation": lambda: spark(core, "%", 2.5, label="Core PCE y/y"),
-        "hy": lambda: spark(F["hy"], "bp", label="HY spread"),
-        "ig": lambda: spark(F["ig"], "bp", label="IG spread"),
+        "hy": lambda: spark(F["hy"], "lvl", label="HY spread"),
+        "baa": lambda: spark(F["baa"], "lvl", label="Baa spread"),
         "ad": lambda: spark(B.get("ad"), "int", digits=0, label="A/D line"),
         "pct200": lambda: spark(B.get("pct200"), "%", 50, digits=1, label="% above 200-day"),
         "cycdef": lambda: spark(B.get("cycdef"), "", with_ma=True, label="Cyclicals/defensives"),
@@ -672,7 +825,7 @@ def main() -> int:
     out = {"generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "fred_mode": "api" if FRED_KEY else "public_csv",
            "now": now_comp, "year_ago": ago_comp, "tiles": tiles, "history": hist,
-           "sections": sections, "errors": errors}
+           "backtest": bt, "sections": sections, "errors": errors}
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out, separators=(",", ":"), allow_nan=False))
     log(f"Wrote {OUT} ({OUT.stat().st_size / 1e6:.2f} MB): {n_ok}/{len(tiles)} tiles scored, "
