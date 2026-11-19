@@ -181,3 +181,4 @@ summary { cursor: pointer; color: var(--text-secondary); }
 .datatable th, .datatable td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--grid); }
 .datatable th:first-child, .datatable td:first-child { text-align: left; }
 .table-wrap { overflow-x: auto; }
+.prose a { color: var(--series-1); }
