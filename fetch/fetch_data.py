@@ -618,6 +618,56 @@ def main() -> int:
         ]},
     ]
 
+    # ---- small chart for each map tile: last 3 years of the series the tile scores
+    d3 = TODAY - pd.DateOffset(years=3)
+
+    def fmtv(v, kind):
+        if kind == "pts":
+            return f"{v:+.1f} pts"
+        if kind == "%":
+            return f"{v:.1f}%"
+        if kind == "bp":
+            return f"{v:.2f}%"
+        if kind == "bn":
+            return f"{v:+,.0f} bn"
+        if kind == "int":
+            return f"{v:,.0f}"
+        if kind == "r4":
+            return f"{v:.3f}"
+        if kind == "$":
+            return f"${v:,.2f}"
+        return f"{v:,.2f}"
+
+    def spark(main, kind, ref=None, with_ma=False, digits=3, label=None):
+        m = clean(main)
+        if m is None:
+            return None
+        sr = S([ser(label or "Value", m, d3, digits),
+                ser("200-day average", ma(m), d3, digits, "dash") if with_ma else None])
+        if not sr:
+            return None
+        return {"series": sr, "ref": ref, "value": fmtv(float(m.iloc[-1]), kind),
+                "date": m.index[-1].strftime("%Y-%m-%d")}
+
+    SPARK = {
+        "policy_gap": lambda: spark(gap, "pts", 0, label="Fed funds minus nominal growth"),
+        "fed_path": lambda: spark(spread2, "pts", 0, label="2-yr minus fed funds"),
+        "net_liq": lambda: spark(nl13, "bn", 0, digits=0, label="13-wk change, $ bn"),
+        "inflation": lambda: spark(core, "%", 2.5, label="Core PCE y/y"),
+        "hy": lambda: spark(F["hy"], "bp", label="HY spread"),
+        "ig": lambda: spark(F["ig"], "bp", label="IG spread"),
+        "ad": lambda: spark(B.get("ad"), "int", digits=0, label="A/D line"),
+        "pct200": lambda: spark(B.get("pct200"), "%", 50, digits=1, label="% above 200-day"),
+        "cycdef": lambda: spark(B.get("cycdef"), "", with_ma=True, label="Cyclicals/defensives"),
+        "ewcw": lambda: spark(B.get("rsp_spy"), "r4", digits=4, label="RSP/SPY"),
+        "copper": lambda: spark(Y["HG=F"], "$", with_ma=True, label="Copper $/lb"),
+        "commod": lambda: spark(Y["DBC"], "$", with_ma=True, label="DBC"),
+        "cugold": lambda: spark(B.get("cugold"), "", with_ma=True, label="Copper/gold x1000"),
+        "dollar": lambda: spark(Y["DX-Y.NYB"], "", with_ma=True, label="DXY"),
+    }
+    for t in tiles:
+        t["spark"] = safe(SPARK[t["id"]], f"spark {t['id']}")
+
     n_ok = sum(1 for t in tiles if t["s"] is not None)
     out = {"generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "fred_mode": "api" if FRED_KEY else "public_csv",

@@ -51,7 +51,7 @@
     if (!opts.keepHash) history.replaceState(null, "", "#" + name);
     if (name === "charts" && DATA && !chartsBuilt) buildCharts();
     if (name === "charts") plots.forEach(({ el }) => Plotly.Plots.resize(el));
-    if (name === "map") sizeMap();
+    if (name === "map") { sizeMap(); if (DATA && mapDirty) buildMap(); }
     if (!opts.keepScroll) window.scrollTo(0, 0);
   }
   function goGuide(id) {
@@ -66,13 +66,140 @@
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
   /* ------------------------------------------------------------- map -- */
+  const isMobile = () => window.innerWidth < 700;
+  let mapDirty = true;
   function sizeMap() {
     const el = $("#map");
     if (!el || $("#tab-map").hidden) return;
+    if (isMobile()) { el.style.height = "auto"; return; }
     const top = el.getBoundingClientRect().top + window.scrollY;
-    const h = Math.max(360, window.innerHeight - top - 40);
-    el.style.height = h + "px";
-    if (el.data) Plotly.Plots.resize(el);
+    el.style.height = Math.max(520, window.innerHeight - top - 40) + "px";
+  }
+
+  /* Squarified treemap layout (Bruls, Huizing & van Wijk 2000). */
+  function squarify(items, x, y, w, h) {
+    const total = items.reduce((s, it) => s + it.w, 0);
+    const scale = (w * h) / total;
+    const nodes = items.map((it) => ({ it, a: it.w * scale }));
+    const out = [];
+    let row = [];
+    const worst = (r, side) => {
+      const s = r.reduce((a, n) => a + n.a, 0);
+      let mx = 0, mn = Infinity;
+      r.forEach((n) => { mx = Math.max(mx, n.a); mn = Math.min(mn, n.a); });
+      return Math.max((side * side * mx) / (s * s), (s * s) / (side * side * mn));
+    };
+    const layoutRow = (r) => {
+      const s = r.reduce((a, n) => a + n.a, 0);
+      if (w >= h) {
+        const cw = s / h; let cy = y;
+        r.forEach((n) => { const ch = n.a / cw; out.push({ it: n.it, x, y: cy, w: cw, h: ch }); cy += ch; });
+        x += cw; w -= cw;
+      } else {
+        const ch = s / w; let cx = x;
+        r.forEach((n) => { const c = n.a / ch; out.push({ it: n.it, x: cx, y, w: c, h: ch }); cx += c; });
+        y += ch; h -= ch;
+      }
+    };
+    nodes.forEach((n) => {
+      const side = Math.min(w, h);
+      if (!row.length || worst(row.concat([n]), side) <= worst(row, side)) row.push(n);
+      else { layoutRow(row); row = [n]; }
+    });
+    if (row.length) layoutRow(row);
+    return out;
+  }
+
+  function tint(t) {
+    if (t.s === null || t.s === undefined) return css("--surface-1");
+    if (t.state === "neutral") return mix(css("--surface-1"), css("--nt"), 0.22);
+    const c = t.s >= 0 ? css("--tw") : css("--hw");
+    return mix(css("--surface-1"), c, 0.2 + 0.3 * Math.min(1, Math.abs(t.s)));
+  }
+  function place(el, x, y, w, h) {
+    el.style.left = x + "px"; el.style.top = y + "px";
+    el.style.width = Math.max(0, w) + "px"; el.style.height = Math.max(0, h) + "px";
+  }
+  function tileEl(t) {
+    const st = STATE[t.state];
+    const el = document.createElement("div");
+    el.className = "tile " + t.state;
+    el.style.background = tint(t);
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", `${t.name}: ${st.label}. ${t.reading}. Open the guide.`);
+    el.title = t.reading;
+    el.dataset.id = t.id;
+    el.innerHTML = `<div class="tile-h"><span class="tile-name"><span aria-hidden="true">${st.icon}</span> ${esc(t.name)}</span>` +
+      `<span class="tile-val">${t.spark ? esc(t.spark.value) : ""}</span></div><div class="tile-plot"></div>`;
+    el.addEventListener("click", () => goGuide(t.id));
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goGuide(t.id); } });
+    return el;
+  }
+  function drawSpark(te, t) {
+    const pd = $(".tile-plot", te);
+    const sp = t.spark;
+    if (!sp || !sp.series.length) { pd.innerHTML = '<div class="tile-na">No data this run</div>'; return; }
+    const tiny = pd.clientHeight < 80 || pd.clientWidth < 140;
+    const traces = sp.series.map((s) => ({
+      x: s.x, y: s.y, name: s.name, type: "scatter", mode: "lines", showlegend: false,
+      line: s.style === "dash" ? { color: css("--text-secondary"), width: 1, dash: "dash" } : { color: css("--text-primary"), width: 1.6 },
+      hovertemplate: "%{x|%b %d, %Y}: %{y}<extra>" + esc(s.name) + "</extra>",
+    }));
+    const ax = { showgrid: false, zeroline: false, fixedrange: true, showticklabels: !tiny,
+      tickfont: { size: 9, color: css("--text-secondary") }, linecolor: "rgba(0,0,0,0)" };
+    const layout = {
+      margin: tiny ? { l: 2, r: 2, t: 2, b: 2 } : { l: 36, r: 4, t: 2, b: 16 },
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", hovermode: "x", dragmode: false,
+      font: { family: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
+      hoverlabel: { bgcolor: css("--surface-1"), bordercolor: css("--axis"), font: { color: css("--text-primary"), size: 12 } },
+      xaxis: Object.assign({ type: "date", nticks: 4 }, ax),
+      yaxis: Object.assign({ nticks: 3 }, ax, { showgrid: !tiny, gridcolor: "rgba(127,127,127,0.22)" }),
+      shapes: sp.ref === null || sp.ref === undefined ? [] : [{ type: "line", xref: "paper", x0: 0, x1: 1, y0: sp.ref, y1: sp.ref,
+        line: { color: css("--text-secondary"), width: 1, dash: "dot" } }],
+    };
+    Plotly.newPlot(pd, traces, layout, { displayModeBar: false, responsive: true });
+  }
+
+  function buildMap() {
+    const el = $("#map");
+    if ($("#tab-map").hidden) { mapDirty = true; return; }
+    $$(".tile-plot", el).forEach((p) => { if (p.data) Plotly.purge(p); });
+    el.innerHTML = "";
+    const mobile = isMobile();
+    el.classList.toggle("stacked", mobile);
+    const groups = [];
+    DATA.tiles.forEach((t) => {
+      let g = groups.find((x) => x.name === t.group);
+      if (!g) groups.push((g = { name: t.group, tiles: [], w: 0 }));
+      g.tiles.push(t); g.w += t.weight;
+    });
+    groups.sort((a, b) => b.w - a.w);
+    groups.forEach((g) => g.tiles.sort((a, b) => b.weight - a.weight));
+    const made = [];
+    if (mobile) {
+      groups.forEach((g) => {
+        const gd = document.createElement("div"); gd.className = "grp";
+        gd.innerHTML = `<div class="grp-h">${esc(g.name)}</div><div class="grp-grid"></div>`;
+        g.tiles.forEach((t) => { const te = tileEl(t); $(".grp-grid", gd).appendChild(te); made.push([te, t]); });
+        el.appendChild(gd);
+      });
+    } else {
+      const W = el.clientWidth, H = el.clientHeight, GAP = 3, HEAD = 20;
+      squarify(groups.map((g) => ({ w: g.w, g })), 0, 0, W, H).forEach((r) => {
+        const gd = document.createElement("div"); gd.className = "grp abs";
+        place(gd, r.x + 2, r.y + 2, r.w - 4, r.h - 4);
+        gd.innerHTML = `<div class="grp-h">${esc(r.it.g.name)}</div>`;
+        el.appendChild(gd);
+        squarify(r.it.g.tiles.map((t) => ({ w: t.weight, t })), 0, HEAD, r.w - 4, r.h - 4 - HEAD).forEach((q) => {
+          const te = tileEl(q.it.t); te.classList.add("abs");
+          place(te, q.x + GAP / 2, q.y + GAP / 2, q.w - GAP, q.h - GAP);
+          gd.appendChild(te); made.push([te, q.it.t]);
+        });
+      });
+    }
+    made.forEach(([te, t]) => drawSpark(te, t));
+    mapDirty = false;
   }
 
   function renderStance(d) {
@@ -91,54 +218,6 @@
       (a ? ` · A year ago: ${esc(a.label)} (${signed(a.score)})` : "") +
       ` · <a href="#g-overall" data-guide="overall">How this is decided</a></div>`;
     $("[data-guide]", root).addEventListener("click", (e) => { e.preventDefault(); goGuide("overall"); });
-  }
-
-  function buildMap() {
-    const el = $("#map");
-    const tiles = DATA.tiles;
-    const groups = [];
-    tiles.forEach((t) => { if (!groups.includes(t.group)) groups.push(t.group); });
-    const small = window.innerWidth < 640;
-
-    const ids = [], labels = [], parents = [], values = [], colors = [], text = [], custom = [], fontc = [];
-    groups.forEach((g) => {
-      const members = tiles.filter((t) => t.group === g);
-      ids.push("grp:" + g); labels.push(g); parents.push("");
-      values.push(members.reduce((s, t) => s + t.weight, 0));
-      colors.push(css("--page")); fontc.push(css("--text-secondary"));
-      text.push(`<b>${esc(g.toUpperCase())}</b>`); custom.push(["", "", ""]);
-    });
-    tiles.forEach((t) => {
-      const st = STATE[t.state];
-      ids.push(t.id); labels.push(t.name); parents.push("grp:" + t.group); values.push(t.weight);
-      colors.push(tileColor(t.s)); fontc.push(t.state === "unavailable" ? css("--text-secondary") : css("--tile-text"));
-      text.push(`<b>${st.icon} ${esc(t.name)}</b><br>${st.label}`);
-      custom.push([esc(t.reading), t.s === null ? "n/a" : signed(t.s), String(t.weight)]);
-    });
-
-    const trace = {
-      type: "treemap", ids, labels, parents, values, branchvalues: "total", sort: false,
-      text, texttemplate: "%{text}", textposition: "middle center",
-      textfont: { color: fontc, size: small ? 12 : 16, family: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-      marker: { colors, line: { color: css("--tile-gap"), width: 2 }, pad: { t: small ? 18 : 22, l: 2, r: 2, b: 2 } },
-      tiling: { pad: 2 }, pathbar: { visible: false }, maxdepth: 2,
-      customdata: custom,
-      hovertemplate: "<b>%{label}</b><br>%{customdata[0]}<br>Score %{customdata[1]} · weight %{customdata[2]}<extra></extra>",
-    };
-    const layout = {
-      margin: { l: 0, r: 0, t: 0, b: 0 }, paper_bgcolor: "rgba(0,0,0,0)",
-      uniformtext: { minsize: 10, mode: "hide" },
-      hoverlabel: { bgcolor: css("--surface-1"), bordercolor: css("--axis"), font: { color: css("--text-primary"), size: 13 }, align: "left" },
-    };
-    Plotly.react(el, [trace], layout, { displayModeBar: false, responsive: true });
-    if (!el._clickBound) {
-      el.on("plotly_treemapclick", (ev) => {
-        const id = ev.points && ev.points[0] && ev.points[0].id;
-        if (id && !String(id).startsWith("grp:")) goGuide(id);
-        return false; // no zooming into groups
-      });
-      el._clickBound = true;
-    }
   }
 
   function chip(state, extra) {
@@ -390,8 +469,6 @@
       renderMapList();
       renderGuide();
       route();
-      sizeMap();
-      buildMap();
     })
     .catch((e) => {
       $("#updated").textContent = "Could not load data (" + e.message + ").";
