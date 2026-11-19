@@ -1,10 +1,10 @@
-# Macro checklist
+# Druck macro map
 
-A daily-refreshed dashboard of the macro signals Stan Druckenmiller described watching in his November 2026 interview: fed funds vs nominal GDP growth, the Fed's path, copper and broad commodities, the advance-decline line vs the S&P 500, credit spreads, cyclicals vs defensives, and inflation vs target, with the dollar, Treasury yields and the fiscal backdrop as context.
+A daily-refreshed tailwind/headwind map of the macro signals Stan Druckenmiller described watching in his November 2026 interview: fed funds vs nominal GDP growth, the Fed's direction and liquidity, inflation, credit spreads, breadth (A/D line, participation), cyclicals vs defensives, copper and commodities, and the dollar. Each signal gets a score from -1 (headwind) to +1 (tailwind); the weighted composite and how much the signals agree give an overall stance (bullish, leaning, or no clarity). The Guide tab on the site states and defends every threshold and weight.
 
 ## How it works
 
-- `fetch/fetch_data.py` pulls every series, computes derived series and the signal labels, and writes `site/data/dashboard.json`.
+- `fetch/fetch_data.py` pulls every series, computes derived series, tile scores, the composite and its month-end history (macro data lagged to its release date), and writes `site/data/dashboard.json`.
 - `site/` is a static page (Plotly charts) that reads that JSON.
 - `.github/workflows/update.yml` runs the fetcher each weekday at 22:30 UTC, on every push to `main`, and on demand, then deploys `site/` to GitHub Pages. Data is not committed to the repo.
 
@@ -21,9 +21,12 @@ A daily-refreshed dashboard of the macro signals Stan Druckenmiller described wa
 | Credit | ICE BofA HY OAS (BAMLH0A0HYM2), IG OAS (BAMLC0A0CM) | FRED |
 | Cyclicals vs defensives | Equal-weight XLY, XLI, XLB, XLF vs XLP, XLU, XLV | Yahoo Finance |
 | Inflation | Core PCE (PCEPILFE), CPI (CPIAUCSL) y/y, 5-yr breakeven (T5YIE) | FRED |
-| Dollar | DXY (DX-Y.NYB), broad dollar (DTWEXBGS) | Yahoo Finance, FRED |
+| Fed liquidity | Fed assets (WALCL) minus TGA (WTREGEN) minus reverse repo (RRPONTSYD) | FRED |
+| Participation | Share of S&P 500 members above their 200-day average | Yahoo Finance |
+| Big commodities (charts only) | WTI (CL=F), natural gas (NG=F), gold (GC=F), copper (HG=F), soybeans (ZS=F), corn (ZC=F) | Yahoo Finance |
+| Dollar | DXY (DX-Y.NYB) | Yahoo Finance |
 | Rates | DGS10, DGS2, T10Y2Y | FRED |
-| Fiscal | Monthly Treasury statement balance (MTSDS133FMS, 12-mo sum / GDP), FYFSGDA188S, GFDEGDQ188S, interest payments (A091RC1Q027SBEA) / GDP, France minus US 10-yr (IRLTLT01FRM156N, IRLTLT01USM156N) | FRED |
+| Fiscal (charts only) | Federal debt / GDP (GFDEGDQ188S), France minus US 10-yr (IRLTLT01FRM156N, IRLTLT01USM156N) | FRED |
 
 The breadth line is a stand-in for the NYSE A/D line, which has no reliable free feed. It uses today's S&P 500 members, so it carries survivorship bias.
 

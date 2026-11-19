@@ -2,41 +2,197 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Macro Checklist</title>
-<meta name="description" content="The macro indicators Stan Druckenmiller says he watches, refreshed daily from free public data.">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Druckenmiller Macro Map</title>
+<meta name="description" content="A tailwind/headwind map of the macro signals Stan Druckenmiller says decide whether he has clarity, refreshed each weekday from free public data.">
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
 </head>
 <body>
-<main class="viz-root">
-  <header class="top">
-    <div>
-      <h1>Macro checklist</h1>
-      <p class="sub">The signals Stan Druckenmiller says he reads to decide whether he has clarity: policy vs growth, the Fed's path, commodities, breadth, credit, cyclicals vs defensives, inflation, plus the dollar, rates and fiscal backdrop.</p>
-    </div>
-    <p class="updated" id="updated">Loading data…</p>
-  </header>
+<header class="bar">
+  <div class="brand">Druck macro map</div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" data-tab="map" aria-selected="true">Map</button>
+    <button role="tab" data-tab="charts" aria-selected="false">Charts</button>
+    <button role="tab" data-tab="guide" aria-selected="false">Guide</button>
+    <button role="tab" data-tab="about" aria-selected="false">About</button>
+  </nav>
+  <div class="updated" id="updated">Loading…</div>
+</header>
 
-  <section class="score" id="score" aria-label="Signal scorecard"></section>
-
-  <div class="controls" role="group" aria-label="Time range">
-    <span class="controls-label">Range</span>
-    <button data-range="1">1Y</button>
-    <button data-range="3">3Y</button>
-    <button data-range="5" class="on">5Y</button>
-    <button data-range="10">10Y</button>
-    <button data-range="0">Max</button>
+<!-- ============================== MAP ============================== -->
+<section id="tab-map" class="tab on" role="tabpanel">
+  <div class="stance" id="stance" aria-live="polite"></div>
+  <div id="map" class="map" aria-label="Tailwind and headwind map"></div>
+  <div class="legend" aria-hidden="true">
+    <span>✕ Headwind</span><span class="ramp"></span><span>Tailwind ✓</span>
+    <span class="legend-note">Tile size = weight in the overall read. Tap a tile for why.</span>
   </div>
+  <div id="maplist" class="maplist"></div>
+</section>
 
-  <section id="panels"></section>
+<!-- ============================== CHARTS ============================== -->
+<section id="tab-charts" class="tab" role="tabpanel" hidden>
+  <div class="wrap">
+    <div class="controls" role="group" aria-label="Time range">
+      <span class="controls-label">Range</span>
+      <button data-range="1">1Y</button>
+      <button data-range="3">3Y</button>
+      <button data-range="5" class="on">5Y</button>
+      <button data-range="10">10Y</button>
+      <button data-range="0">Max</button>
+    </div>
+    <div id="charts"></div>
+  </div>
+</section>
 
-  <footer class="foot">
-    <p>Signal labels (Supportive, Mixed, Headwind) come from simple rules written for this dashboard and stated on each card. They are not Druckenmiller's own thresholds. "Supportive" means the reading looks like his January setup (loose policy, breakouts, broad participation, tight spreads); "Headwind" means it looks like his November one.</p>
-    <p>Data: FRED (Federal Reserve Bank of St. Louis), including ICE BofA spread series; Yahoo Finance via yfinance. Refreshed each weekday evening by GitHub Actions.</p>
-    <p id="errors" class="errors"></p>
-  </footer>
-</main>
+<!-- ============================== GUIDE ============================== -->
+<section id="tab-guide" class="tab" role="tabpanel" hidden>
+  <div class="wrap prose">
+    <h1>How each tile is colored</h1>
+    <p>Every signal is turned into a score from <b>−1</b> (full headwind for risk assets) to <b>+1</b> (full tailwind). A tile is a <b>tailwind ✓</b> at +0.2 or above, a <b>headwind ✕</b> at −0.2 or below, and <b>neutral</b> in between, so a reading sitting right on the line doesn't flip color day to day. Deeper color means a stronger score.</p>
+    <p>Each tile also shows, from the last five years of month-end data, how often it read tailwind, neutral and headwind. That is the check on the thresholds: a good threshold flips a few times a cycle, not every month, and doesn't sit on one side for years.</p>
+
+    <h2 id="g-overall">The overall read</h2>
+    <p>The composite is the weighted average of the tile scores (weights below; tile size on the map). The stance needs two things, because Druckenmiller's rule is about <i>clarity</i>, not just direction: "when I have clarity, I like to play big… when I don't have clarity, I'll almost sometimes not play."</p>
+    <ul>
+      <li><b>Bullish</b>: composite ≥ +0.35 <i>and</i> at least 60% of the weight sits in tailwinds. Everything lines up, like his January setup.</li>
+      <li><b>Bearish</b>: composite ≤ −0.35 and at least 60% of the weight in headwinds.</li>
+      <li><b>Leaning bullish / bearish</b>: composite beyond ±0.15 without that agreement.</li>
+      <li><b>No clarity</b>: in between. This is his "I'm not playing" zone.</li>
+    </ul>
+    <p>Why 0.35 and 60%: with five or six signals mildly positive and the rest mixed, the average lands around +0.2; it takes most of the weight pointing the same way, with conviction, to clear +0.35. The 60% agreement bar stops one or two extreme readings from producing a "bullish" call on their own.</p>
+    <p><b>Weights.</b> Liquidity and the Fed carry 43 of 100, because his framework puts monetary policy first (policy vs growth 15, Fed direction 12, Fed liquidity 8, inflation 8). Credit 15 (high yield 10, investment grade 5). Market internals 24 (A/D line 8, cyclicals vs defensives 7, participation 6, equal vs cap weight 3). Commodities and the dollar 18 (copper 6, broad commodities 5, dollar 4, copper/gold 3). Signals that overlap (copper inside broad commodities, equal weight inside participation) get smaller weights so the same fact isn't counted twice.</p>
+    <p>None of these numbers are Druckenmiller's own. They are this dashboard's attempt to encode the signals he named, and they are stated here so you can disagree with them.</p>
+
+    <div id="guide-tiles">
+      <article class="g" id="g-policy_gap" data-tile="policy_gap">
+        <h2>Policy vs growth</h2>
+        <p class="what">Effective fed funds rate minus nominal GDP growth over the past year.</p>
+        <p><b>Why he watches it.</b> His test for whether money is loose: in January "Fed funds were three and a half, nominal growth was 6%. So monetary policy was ridiculously loose." When the policy rate sits below the economy's nominal growth, borrowing is cheap relative to the income it finances.</p>
+        <p><b>Rule.</b> Score = −gap ÷ 2 pts. Tailwind once fed funds is 0.4 pts or more below nominal growth; full tailwind at 2 pts below; mirror image above.</p>
+        <p><b>Why that threshold.</b> A policy rate roughly equal to nominal growth is the textbook neutral point (the cost of money matches how fast incomes are growing). The ±2-point full scale is close to his own January example (2.5 pts below), so a setup like that reads as near-maximum tailwind. Nominal GDP is used only once it was published, about four months after the quarter starts.</p>
+      </article>
+      <article class="g" id="g-fed_path" data-tile="fed_path">
+        <h2>Fed direction</h2>
+        <p class="what">Two-year Treasury yield minus fed funds, averaged with the change in the Fed's target over the past six months.</p>
+        <p><b>Why he watches it.</b> He reads the path, not just the level: in January "more interest rate cuts were supposedly coming"; now "the Fed is not cutting. They're hiking." The 2-year yield is the market's estimate of where policy goes over two years, so it moves before the Fed does.</p>
+        <p><b>Rule.</b> Two halves. Market half: −(2-yr minus fed funds) ÷ 0.75 pts. Realized half: −(6-month change in target) ÷ 0.5 pts. Tailwind when the market prices cuts and/or the Fed has been cutting.</p>
+        <p><b>Why that threshold.</b> 0.75 pts is three standard 25-bp moves, about what a market pricing a real easing or tightening cycle builds into the 2-year. 0.5 pts in six months is two moves, the point where a direction is established rather than a one-off. The FOMC median dots are listed under the chart for reference but not scored, since they update only four times a year.</p>
+      </article>
+      <article class="g" id="g-net_liq" data-tile="net_liq">
+        <h2>Fed liquidity</h2>
+        <p class="what">Fed balance sheet minus the Treasury's cash account minus the reverse-repo facility, change over 13 weeks.</p>
+        <p><b>Why he watches it.</b> He has long said liquidity, not earnings, moves the overall market. This is the common measure of how much central-bank money is actually in the system rather than parked at the Fed.</p>
+        <p><b>Rule.</b> The 13-week change divided by its own standard deviation over the past five years, then ÷ 1.5. Tailwind once liquidity is growing faster than 0.3 standard deviations; full tailwind at 1.5.</p>
+        <p><b>Why that threshold.</b> Measuring in standard deviations lets the rule adapt as the balance sheet changes size (a $100 bn move meant more in 2015 than in 2022). 1.5 standard deviations is an unusual quarter, so only clear injections or drains reach full color.</p>
+      </article>
+      <article class="g" id="g-inflation" data-tile="inflation">
+        <h2>Inflation pressure</h2>
+        <p class="what">Core PCE inflation over the past year, the Fed's preferred gauge.</p>
+        <p><b>Why he watches it.</b> Inflation decides how free the Fed is to ease. He pointed to inflation having "been above target for five years" as a reason the Fed is now tightening.</p>
+        <p><b>Rule.</b> Score = (2.5% − core PCE) ÷ 1 pt. Neutral at 2.5%, full headwind at 3.5% or higher, full tailwind at 1.5% or lower.</p>
+        <p><b>Why that threshold.</b> The target is 2%, but the Fed has tolerated core inflation up to about half a point above it without changing course, so 2.5% is where pressure on policy starts. A full point past that is a level that has historically forced the Fed's hand. Data is used with its two-month publication lag.</p>
+      </article>
+      <article class="g" id="g-hy" data-tile="hy">
+        <h2>High-yield spreads</h2>
+        <p class="what">ICE BofA US High Yield option-adjusted spread, change over 3 months.</p>
+        <p><b>Why he watches it.</b> Credit spreads were "very very tight" in his bullish setup and "widening" in his bearish one. Lenders to the weakest companies usually see trouble before equity holders do.</p>
+        <p><b>Rule.</b> Score = −(3-month change in bp) ÷ 50 bp. Tailwind once spreads have tightened 10 bp or more; full headwind at 50 bp of widening.</p>
+        <p><b>Why that threshold.</b> The direction is scored rather than the level because spreads can stay tight for years; it is the turn from tightening to widening that he flags. 50 bp in a quarter is a large move outside recessions; episodes of that much widening (2015–16, late 2018, 2022) all came with equity drawdowns.</p>
+      </article>
+      <article class="g" id="g-ig" data-tile="ig">
+        <h2>Investment-grade spreads</h2>
+        <p class="what">ICE BofA US Corporate option-adjusted spread, change over 3 months.</p>
+        <p><b>Why he watches it.</b> The same signal from the safer end of the market; when even investment-grade spreads widen, the stress is broad.</p>
+        <p><b>Rule.</b> Score = −(3-month change in bp) ÷ 20 bp.</p>
+        <p><b>Why that threshold.</b> Investment-grade spreads move roughly 40% as much as high-yield spreads, so 20 bp here is about the same-sized shock as 50 bp in high yield.</p>
+      </article>
+      <article class="g" id="g-ad" data-tile="ad">
+        <h2>A/D line confirms</h2>
+        <p class="what">Whether the cumulative advance-decline line of S&amp;P 500 stocks is keeping up with the index.</p>
+        <p><b>Why he watches it.</b> His clearest bearish tell: the advance-decline line "made its high back on August 14th despite the fact the averages making their high in October." When the index rises on fewer and fewer stocks, the rally is narrowing.</p>
+        <p><b>Rule.</b> Score = 1 − (trading days since the A/D line's 52-week high) ÷ 30. A fresh A/D high is a full tailwind; about five weeks without one turns it neutral; twelve weeks is a full headwind. If the index itself is more than a month off its high, the score is halved, since there is no rally to confirm.</p>
+        <p><b>Why that threshold.</b> Short gaps happen all the time; a divergence lasting more than about six weeks (30 trading days) is what breadth analysts treat as meaningful. His own example ran about two months.</p>
+        <p class="caveat">Built from today's S&amp;P 500 members, so it carries survivorship bias; the NYSE A/D line he likely watches has no reliable free feed.</p>
+      </article>
+      <article class="g" id="g-pct200" data-tile="pct200">
+        <h2>Participation</h2>
+        <p class="what">Share of S&amp;P 500 stocks trading above their own 200-day average.</p>
+        <p><b>Why he watches it.</b> One of the "other technicals" he checks alongside the A/D line: are most stocks in uptrends, or only a handful?</p>
+        <p><b>Rule.</b> Score = (share − 50%) ÷ 25 pts. Tailwind above 55%, headwind below 45%, full color at 75% and 25%.</p>
+        <p><b>Why that threshold.</b> 50% is the natural midpoint: more stocks in uptrends than downtrends. Readings above 75% or below 25% occur mainly in strong bull runs and in sell-offs, so they mark the ends of the scale.</p>
+      </article>
+      <article class="g" id="g-cycdef" data-tile="cycdef">
+        <h2>Cyclicals vs defensives</h2>
+        <p class="what">Consumer discretionary, industrials, materials and financials versus staples, utilities and health care (sector ETFs), against its 200-day average.</p>
+        <p><b>Why he watches it.</b> The market's own forecast of the economy. Cyclicals lead when investors expect growth; defensives lead when they're bracing for a slowdown.</p>
+        <p><b>Rule.</b> Score = (ratio ÷ 200-day average − 1) ÷ 4%.</p>
+        <p><b>Why that threshold.</b> The 200-day average is the standard trend line. Being 0.8% above it is enough to call a tailwind; 4% is about one typical swing of this ratio, so full color means a clear, established trend.</p>
+      </article>
+      <article class="g" id="g-ewcw" data-tile="ewcw">
+        <h2>Equal vs cap weight</h2>
+        <p class="what">Equal-weight S&amp;P 500 (RSP) relative to the cap-weight index (SPY), change over 3 months.</p>
+        <p><b>Why he watches it.</b> A second breadth check. If the average stock beats the index, gains are broad; if the index wins, a few giants are carrying it.</p>
+        <p><b>Rule.</b> Score = 3-month relative change ÷ 3%.</p>
+        <p><b>Why that threshold.</b> 3% of relative performance in a quarter is a decisive rotation either way; small drifts stay neutral. Weighted lightly because it overlaps with participation.</p>
+      </article>
+      <article class="g" id="g-copper" data-tile="copper">
+        <h2>Copper</h2>
+        <p class="what">COMEX copper futures against their 200-day average.</p>
+        <p><b>Why he watches it.</b> In January commodities "were breaking out to a new high, including copper"; now they "look like they've topped," and he is short copper. Copper goes into construction and industry, so it tracks real demand.</p>
+        <p><b>Rule.</b> Score = (price ÷ 200-day average − 1) ÷ 10%.</p>
+        <p><b>Why that threshold.</b> The full scale is set to copper's volatility: 10% from the 200-day is about one standard deviation for copper, so a typical uptrend reads as tailwind and only a real breakout or breakdown reaches full color. The distance from the 52-week high is shown in the reading as the breakout check.</p>
+      </article>
+      <article class="g" id="g-commod" data-tile="commod">
+        <h2>Broad commodities</h2>
+        <p class="what">Invesco DB Commodity Index fund (DBC) against its 200-day average.</p>
+        <p><b>Why he watches it.</b> The same logic as copper across energy, metals and grains: breaking out says demand is strong.</p>
+        <p><b>Rule.</b> Score = (price ÷ 200-day − 1) ÷ 7%.</p>
+        <p><b>Why that threshold.</b> A diversified basket is less volatile than copper, so its scale is tighter to keep a typical move comparable.</p>
+      </article>
+      <article class="g" id="g-cugold" data-tile="cugold">
+        <h2>Copper / gold</h2>
+        <p class="what">Copper price divided by gold price, against its 200-day average.</p>
+        <p><b>Why he watches it.</b> Growth metal versus fear metal. A rising ratio says markets are paying for growth over safety.</p>
+        <p><b>Rule.</b> Score = (ratio ÷ 200-day − 1) ÷ 8%.</p>
+        <p><b>Why that threshold.</b> Scaled to the ratio's volatility, between copper's and the basket's.</p>
+      </article>
+      <article class="g" id="g-dollar" data-tile="dollar">
+        <h2>Dollar</h2>
+        <p class="what">US Dollar Index (DXY) against its 200-day average. A weaker dollar scores as a tailwind.</p>
+        <p><b>Why he watches it.</b> He trades currencies and holds "some small positions in the dollar." A falling dollar loosens financial conditions worldwide and usually helps commodities and risk assets; a surging dollar tightens them.</p>
+        <p><b>Rule.</b> Score = −(DXY ÷ 200-day − 1) ÷ 4%.</p>
+        <p><b>Why that threshold.</b> The dollar is far less volatile than commodities; 4% from its 200-day average is a large move for it.</p>
+      </article>
+    </div>
+    <p class="caveat">Federal debt, Treasury yields and the France–US yield spread are on the Charts tab as background. They're context for the Fed's change of heart, not a timing signal, so they aren't scored.</p>
+  </div>
+</section>
+
+<!-- ============================== ABOUT ============================== -->
+<section id="tab-about" class="tab" role="tabpanel" hidden>
+  <div class="wrap prose">
+    <h1>About</h1>
+    <p><b>The interview.</b> Stan Druckenmiller in conversation with Gavin Baker at the TomorrowX conference in Austin, November 2026. <span class="placeholder">A link to the official recording will be added here once it's posted.</span></p>
+
+    <h2>His macro logic, in short</h2>
+    <p><b>Clarity decides the bet size.</b> "Sometimes in my career, I've had clarity and sometimes I have no clarity. And when I have clarity, I like to play big. And when I don't have clarity, I'll almost sometimes not play." The map is built to answer that one question: do the signals line up?</p>
+    <p><b>Money comes first.</b> The first thing he checks is whether monetary policy is loose or tight relative to the economy (fed funds against nominal growth) and which way the Fed is heading. Liquidity drives the overall market more than earnings do.</p>
+    <p><b>Markets tell you before the data does.</b> Then he asks whether markets agree: commodities and copper breaking out or topping, the advance-decline line and other technicals making new highs or diverging, credit spreads tight or widening.</p>
+    <p><b>Look 6 to 12 months out.</b> The checklist isn't about today's economy (he notes it's still strong) but about whether a recession or a boom is plausible a year out.</p>
+    <p><b>He doesn't have to be in stocks.</b> He trades stocks, bonds, currencies and commodities, so when equities offer no clarity he can stand aside: "bonds and currencies tend to take their biggest move when equities are in bear markets."</p>
+
+    <h2>How to read the map</h2>
+    <p>Green tiles with ✓ look like his bullish January setup; red tiles with ✕ look like his November "I'm not playing" setup. The headline says what the whole picture adds up to under the rules on the Guide tab. A mixed map is itself the signal: no clarity.</p>
+
+    <h2>Data</h2>
+    <p>FRED (Federal Reserve Bank of St. Louis), including ICE BofA credit spread series; Yahoo Finance via yfinance for futures, ETFs and S&amp;P 500 members. Refreshed each weekday evening by GitHub Actions. Macro data is used with its publication lag, so past readings show what was knowable at the time.</p>
+    <p>This is a research tool, not investment advice, and it isn't affiliated with or endorsed by Stan Druckenmiller.</p>
+    <p id="errors" class="caveat"></p>
+  </div>
+</section>
+
 <script src="app.js"></script>
 </body>
 </html>
