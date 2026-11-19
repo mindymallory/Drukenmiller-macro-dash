@@ -51,11 +51,15 @@
 <section id="tab-backtest" class="tab" role="tabpanel" hidden>
   <div class="wrap">
     <div class="prose">
-      <h1>Does the score line up with later returns?</h1>
-      <p>The overall score is recomputed at every month-end since 2000, using only data that had been published by then, and set against the S&amp;P 500's return over the following 6 or 12 months.</p>
+      <h1>Does the score line up with what came next?</h1>
+      <p>The overall score is recomputed at every month-end since 2000, using only data that had been published by then, and set against what the S&amp;P 500 did over the following 6 or 12 months: its return, its volatility, and its deepest drawdown. Druckenmiller uses these signals to decide when to bet big and when to sit out, so the risk tests may matter more than the return test.</p>
     </div>
     <div class="controls btctl" role="group" aria-label="Backtest settings">
-      <span class="controls-label">Horizon</span>
+      <span class="controls-label">Test against</span>
+      <button data-tgt="fwd" class="on">Returns</button>
+      <button data-tgt="fvol">Volatility</button>
+      <button data-tgt="fdd">Drawdowns</button>
+      <span class="controls-label sep">Horizon</span>
       <button data-h="6">6 months</button>
       <button data-h="12" class="on">12 months</button>
       <span class="controls-label sep">Test period starts</span>
@@ -73,7 +77,11 @@
       <article class="card"><div class="card-head"><h3>Average return by score bucket</h3>
         <div class="controls btctl mini" role="group" aria-label="Buckets"><button data-nb="3">Thirds</button><button data-nb="5" class="on">Fifths</button></div></div>
         <div id="bt-bk" class="plot"></div>
-        <p class="meta">Dotted line: average across all months.</p></article>
+        <p class="meta">Dotted line: average across all months. On Drawdowns, bars show how often a drawdown worse than 10% or 20% followed.</p></article>
+      <article class="card wide"><div class="card-head"><h3>Timing rule: in stocks only when the score is at or above a cutoff</h3>
+        <div class="controls btctl mini"><span class="controls-label">Cutoff</span><input type="range" id="bt-cut" min="-0.6" max="0.4" step="0.05" aria-label="Score cutoff"><output id="bt-cut-out"></output></div></div>
+        <p class="meta">Each month-end, hold the S&amp;P 500 (total return) for the next month if the score is at or above the cutoff, otherwise 3-month T-bills. The default cutoff, −0.15, steps out only when the read is Leaning bearish or worse. No trading costs or taxes. The NW t tests the monthly return gap against buy and hold. The walk-forward score needs five years of history before its first fit, so it holds stocks until then. The cutoff is one more setting you can overfit.</p>
+        <div id="bt-timing"></div></article>
     </div>
 
     <h2 class="section-title">Sandbox: change the weights and thresholds</h2>

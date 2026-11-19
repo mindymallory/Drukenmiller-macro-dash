@@ -441,7 +441,14 @@
 
   /* -------------------------------------------------------- backtest -- */
   /* Mirrors bt_scores / bt_summary in fetch/fetch_data.py. All monthly. */
-  const BT = { h: 12, split: null, nb: 5, P: null, P0: null, built: false, plots: {}, raf: 0 };
+  const BT = { h: 12, split: null, nb: 5, P: null, P0: null, built: false, plots: {}, raf: 0, target: "fwd", cut: -0.15 };
+  /* sign: direction of a useful correlation (higher score -> higher return, lower vol, shallower drawdown). */
+  const TGT = {
+    fwd: { sign: 1, lab: (h) => `return over the next ${h} months`, ax: (h) => `Next ${h} months`, short: "Next return" },
+    fvol: { sign: -1, lab: (h) => `volatility over the next ${h} months`, ax: (h) => `Volatility, next ${h}m`, short: "Next vol" },
+    fdd: { sign: -1, lab: (h) => `deepest drawdown over the next ${h} months`, ax: (h) => `Max drawdown, next ${h}m`, short: "Next drawdown" },
+  };
+  const tgtArr = (h) => DATA.backtest[BT.target + (h || BT.h)];
   const clip1 = (x) => Math.max(-1, Math.min(1, x));
   const ymOf = (iso) => Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1;
   const btIds = () => DATA.backtest.params.map((q) => q.id);
@@ -515,7 +522,7 @@
   }
 
   function btRows(sc, h) {
-    const f = DATA.backtest["fwd" + h];
+    const f = tgtArr(h);
     return sc.map((v, i) => i).filter((i) => sc[i] !== null && f[i] !== null);
   }
   const splitYm = () => BT.split * 12;
@@ -524,7 +531,7 @@
 
   /* Weight each signal by its own (positive) correlation with forward returns on `rows`. */
   function icWeights(P, rows, h) {
-    const B = DATA.backtest, f = B["fwd" + h], w = {};
+    const B = DATA.backtest, f = tgtArr(h), w = {};
     btIds().forEach((id) => {
       const q = P[id], xs = [], ys = [];
       rows.forEach((i) => {
@@ -532,7 +539,7 @@
         if (m !== null && f[i] !== null) { xs.push(clip1((m - q.c) / q.k)); ys.push(f[i]); }
       });
       const c = xs.length >= 24 ? pearson(xs, ys) : NaN;
-      w[id] = isFinite(c) ? Math.max(0, c) : 0;
+      w[id] = isFinite(c) ? Math.max(0, TGT[BT.target].sign * c) : 0;
     });
     const tot = Object.values(w).reduce((s, v) => s + v, 0);
     const out = {};
@@ -555,7 +562,7 @@
   }
 
   function btStats(sc, h, idx) {
-    const f = DATA.backtest["fwd" + h];
+    const f = tgtArr(h);
     const rows = idx.filter((i) => sc[i] !== null);
     const xs = rows.map((i) => sc[i]), ys = rows.map((i) => f[i]);
     const sub = (ii) => { const r = ii.filter((i) => sc[i] !== null); return r.length > 5 ? pearson(r.map((i) => sc[i]), r.map((i) => f[i])) : NaN; };
@@ -600,15 +607,25 @@
   }
 
   function btLead(R) {
-    const d = R.rows[0].st, B = DATA.backtest;
+    const d = R.rows[0].st, B = DATA.backtest, T = TGT[BT.target];
     if (!R.idx1.length) return '<p class="bt-lead">Your settings leave too little weight to score any month. Raise some weights or press Reset.</p>';
     const first = B.dates[R.idx1[0]], last = B.dates[R.idx1[R.idx1.length - 1]];
     const mo = (iso) => new Date(iso + "T00:00:00").toLocaleDateString(undefined, { year: "numeric", month: "short" });
-    return `<p class="bt-lead">With the default settings, the score's correlation with the next ${BT.h} months of returns is ` +
-      `<b>${f2(d.train)}</b> before ${BT.split} and <b>${f2(d.test)}</b> from ${BT.split} on (${f2(d.corr)} over the whole sample).</p>` +
-      `<p class="caveat">${esc(B.ret_name)}, month-ends ${mo(first)} to ${mo(last)}, ${R.rows[1].st.n} months. ` +
+    let html = `<p class="bt-lead">With the default settings, the score's correlation with the ${T.lab(BT.h)} is ` +
+      `<b>${f2(d.train)}</b> before ${BT.split} and <b>${f2(d.test)}</b> from ${BT.split} on (${f2(d.corr)} over the whole sample).`;
+    if (T.sign < 0) html += ` A useful risk signal shows a <i>negative</i> number here: higher score, calmer market after.`;
+    html += "</p>";
+    if (BT.target === "fdd") {
+      const f = tgtArr(), ii = B.dates.map((_, i) => i).filter((i) => R.s0[i] !== null && f[i] !== null);
+      const lo = ii.filter((i) => R.s0[i] <= -0.15), hi = ii.filter((i) => R.s0[i] > -0.15);
+      const p = (g, th) => (g.length ? Math.round((100 * g.filter((i) => f[i] > th).length) / g.length) + "%" : "–");
+      html += `<p class="bt-lead small">A drawdown worse than 10% followed ${p(lo, 10)} of months when the default score was −0.15 or lower ` +
+        `(${lo.length} months), against ${p(hi, 10)} of the rest (${hi.length}). Worse than 20%: ${p(lo, 20)} against ${p(hi, 20)}.</p>`;
+    }
+    html += `<p class="caveat">${esc(B.ret_name)}, month-ends ${mo(first)} to ${mo(last)}, ${R.rows[1].st.n} months. ` +
       `Overlapping ${BT.h}-month windows leave only about ${Math.round(R.rows[1].st.n / BT.h)} independent observations, ` +
       `so a correlation needs to be roughly ±${(2 / Math.sqrt(Math.max(4, R.rows[1].st.n / BT.h))).toFixed(2)} or larger to stand out from noise.</p>`;
+    return html;
   }
 
   function btLayoutBase() {
@@ -622,20 +639,20 @@
   const ax = (o) => Object.assign({ gridcolor: css("--grid"), linecolor: css("--axis"), zeroline: false }, o || {});
 
   function btTimePlot(R) {
-    const B = DATA.backtest, f = B["fwd" + BT.h], same = sameP(BT.P, BT.P0);
+    const B = DATA.backtest, f = tgtArr(), same = sameP(BT.P, BT.P0), T = TGT[BT.target];
     const tr = [];
     if (!same) tr.push({ x: B.dates, y: R.s0, name: "Default score", type: "scatter", mode: "lines",
       line: { color: css("--text-muted"), width: 1.2 }, hovertemplate: "%{y:+.2f}<extra>Default</extra>" });
     tr.push({ x: B.dates, y: R.s1, name: same ? "Score" : "Your score", type: "scatter", mode: "lines",
       line: { color: css("--series-1"), width: 2 }, hovertemplate: "%{y:+.2f}<extra>Score</extra>" });
-    tr.push({ x: B.dates, y: f, name: `Next ${BT.h} months' return`, type: "scatter", mode: "lines", yaxis: "y2",
-      line: { color: css("--series-2"), width: 1.6 }, hovertemplate: "%{y:.1f}%<extra>Next " + BT.h + "m</extra>" });
+    tr.push({ x: B.dates, y: f, name: T.ax(BT.h), type: "scatter", mode: "lines", yaxis: "y2",
+      line: { color: css("--series-2"), width: 1.6 }, hovertemplate: "%{y:.1f}%<extra>" + T.short + "</extra>" });
     const L = btLayoutBase();
     Object.assign(L, {
       margin: { l: 52, r: 12, t: 28, b: 28 }, hovermode: "x unified",
       xaxis: ax({ type: "date" }),
       yaxis: ax({ domain: [0.54, 1], range: [-1, 1], title: { text: "Score", font: { size: 11 } } }),
-      yaxis2: ax({ domain: [0, 0.44], anchor: "x", ticksuffix: "%", title: { text: "Fwd return", font: { size: 11 } } }),
+      yaxis2: ax({ domain: [0, 0.44], anchor: "x", ticksuffix: "%", title: { text: T.short, font: { size: 11 } } }),
     });
     L.shapes.push({ type: "rect", xref: "x", yref: "paper", x0: BT.split + "-01-01", x1: B.dates[B.dates.length - 1], y0: 0, y1: 1,
       fillcolor: css("--text-muted"), opacity: 0.1, line: { width: 0 }, layer: "below" });
@@ -646,12 +663,12 @@
   }
 
   function btScatter(R) {
-    const B = DATA.backtest, f = B["fwd" + BT.h], sc = R.s1;
+    const B = DATA.backtest, f = tgtArr(), sc = R.s1, T = TGT[BT.target];
     const train = new Set(trainRows(R.idx1, BT.h)), test = new Set(testRows(R.idx1));
     const grp = (name, keep, color) => {
       const ii = R.idx1.filter(keep);
       return { x: ii.map((i) => sc[i]), y: ii.map((i) => f[i]), text: ii.map((i) => B.dates[i].slice(0, 7)), name, type: "scatter", mode: "markers",
-        marker: { color, size: 6, opacity: 0.75 }, hovertemplate: "%{text}: score %{x:+.2f}, next " + BT.h + "m %{y:.1f}%<extra></extra>" };
+        marker: { color, size: 6, opacity: 0.75 }, hovertemplate: "%{text}: score %{x:+.2f}, " + T.short.toLowerCase() + " %{y:.1f}%<extra></extra>" };
     };
     const tr = [grp(`Before ${BT.split}`, (i) => train.has(i), css("--series-1")),
       grp(`${BT.split} on`, (i) => test.has(i), css("--series-2"))];
@@ -669,7 +686,7 @@
     const L = btLayoutBase();
     Object.assign(L, { margin: { l: 52, r: 12, t: 28, b: 40 }, hovermode: "closest",
       xaxis: ax({ title: { text: "Score at month-end", font: { size: 11 } }, range: [-1.05, 1.05] }),
-      yaxis: ax({ ticksuffix: "%", title: { text: `Next ${BT.h} months`, font: { size: 11 } } }) });
+      yaxis: ax({ ticksuffix: "%", title: { text: T.ax(BT.h), font: { size: 11 } } }) });
     return { tr, L };
   }
 
@@ -683,24 +700,83 @@
     return out;
   }
   function btBuckets(R) {
-    const f = DATA.backtest["fwd" + BT.h], sc = R.s1, nb = BT.nb;
+    const f = tgtArr(), sc = R.s1, nb = BT.nb, T = TGT[BT.target];
     const labs = nb === 3 ? ["Low third", "Middle third", "High third"] : ["Lowest fifth", "2nd", "3rd", "4th", "Highest fifth"];
-    const mk = (name, ii, color) => {
-      const bm = bucketMeans(ii, sc, f, nb);
-      return { x: labs, y: bm.map((b) => (b ? b.m : null)), name, type: "bar", marker: { color },
-        customdata: bm.map((b) => (b ? [b.n, b.lo, b.hi] : [0, 0, 0])),
-        hovertemplate: "%{y:.1f}% avg, %{customdata[0]} months, scores %{customdata[1]:+.2f} to %{customdata[2]:+.2f}<extra>" + name + "</extra>" };
+    const parts = (ii) => {
+      const o = ii.slice().sort((a, b) => sc[a] - sc[b]);
+      return labs.map((_, b) => o.slice(Math.floor((b * o.length) / nb), Math.floor(((b + 1) * o.length) / nb)));
     };
-    const tr = [mk("Whole sample", R.idx1, css("--series-1")), mk(`${BT.split} on`, testRows(R.idx1), css("--series-2"))];
+    const bar = (name, ps, fn, color) => ({ x: labs, y: ps.map((p) => (p.length ? fn(p) : null)), name, type: "bar", marker: { color },
+      customdata: ps.map((p) => (p.length ? [p.length, sc[p[0]], sc[p[p.length - 1]]] : [0, 0, 0])),
+      hovertemplate: "%{y:.1f}%, %{customdata[0]} months, scores %{customdata[1]:+.2f} to %{customdata[2]:+.2f}<extra>" + name + "</extra>" });
+    const avg = (p) => mean(p.map((i) => f[i]));
     const L = btLayoutBase();
+    let tr, ytitle, base = null;
+    if (BT.target === "fdd") {
+      const ps = parts(R.idx1);
+      const share = (th) => (p) => (100 * p.filter((i) => f[i] > th).length) / p.length;
+      tr = [bar("Drawdown worse than 10%", ps, share(10), css("--series-1")), bar("Worse than 20%", ps, share(20), css("--hw"))];
+      ytitle = `% of months, next ${BT.h}m`;
+    } else {
+      tr = [bar("Whole sample", parts(R.idx1), avg, css("--series-1")), bar(`${BT.split} on`, parts(testRows(R.idx1)), avg, css("--series-2"))];
+      ytitle = "Avg " + T.ax(BT.h).toLowerCase();
+      if (R.idx1.length) base = mean(R.idx1.map((i) => f[i]));
+    }
     Object.assign(L, { margin: { l: 52, r: 12, t: 28, b: 40 }, barmode: "group", hovermode: "closest",
       xaxis: ax({ title: { text: "Months grouped by score", font: { size: 11 } } }),
-      yaxis: ax({ ticksuffix: "%", title: { text: `Avg next ${BT.h} months`, font: { size: 11 } } }) });
-    if (R.idx1.length) {
-      const m = mean(R.idx1.map((i) => f[i]));
-      L.shapes.push({ type: "line", xref: "paper", x0: 0, x1: 1, y0: m, y1: m, line: { color: css("--text-muted"), width: 1, dash: "dot" } });
-    }
+      yaxis: ax({ ticksuffix: "%", title: { text: ytitle, font: { size: 11 } } }) });
+    if (base !== null) L.shapes.push({ type: "line", xref: "paper", x0: 0, x1: 1, y0: base, y1: base, line: { color: css("--text-muted"), width: 1, dash: "dot" } });
     return { tr, L };
+  }
+
+  /* Timing rule: hold the S&P 500 next month if the score is at or above the cutoff, else T-bills. */
+  function meanNwT(x, L) {
+    const n = x.length, m = mean(x), e = x.map((v) => v - m);
+    let s = e.reduce((a, v) => a + v * v, 0) / n;
+    for (let l = 1; l <= L; l++) {
+      let g = 0;
+      for (let t = l; t < n; t++) g += e[t] * e[t - l];
+      s += (2 * (1 - l / (L + 1)) * g) / n;
+    }
+    return s > 0 ? m / Math.sqrt(s / n) : NaN;
+  }
+  function perf(rets, ex) {
+    let w = 1, peak = 1, dd = 0;
+    rets.forEach((r) => { w *= 1 + r / 100; peak = Math.max(peak, w); dd = Math.max(dd, 1 - w / peak); });
+    const sd = (a) => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1)); };
+    const se = sd(ex);
+    return { cagr: (Math.pow(w, 12 / rets.length) - 1) * 100, vol: sd(rets) * Math.sqrt(12), sharpe: se ? (mean(ex) / se) * Math.sqrt(12) : NaN, dd: dd * 100 };
+  }
+  function timing(sc, rows) {
+    const B = DATA.backtest, r = B.m1, rf = B.rf1;
+    rows = rows.filter((i) => r[i] !== null);
+    if (rows.length < 24) return null;
+    const inStocks = (i) => sc[i] === null || sc[i] >= BT.cut; // no score yet: stay invested
+    const tm = rows.map((i) => (inStocks(i) ? r[i] : rf[i]));
+    const diff = rows.map((i, k) => tm[k] - r[i]);
+    return { n: rows.length, inv: rows.filter(inStocks).length / rows.length,
+      p: perf(tm, rows.map((i, k) => tm[k] - rf[i])), ex: mean(diff) * 12, t: meanNwT(diff, 6) };
+  }
+  function btTiming(R) {
+    const B = DATA.backtest, all = B.dates.map((_, i) => i);
+    const periods = [["Whole sample", all], [`${BT.split} on`, all.filter((i) => ymOf(B.dates[i]) >= splitYm())]];
+    const pc = (v, d) => (isFinite(v) ? v.toFixed(d == null ? 1 : d) + "%" : "–");
+    let body = "";
+    periods.forEach(([plab, rows]) => {
+      const ok = rows.filter((i) => B.m1[i] !== null && R.s0[i] !== null);
+      if (ok.length < 24) return;
+      const bh = perf(ok.map((i) => B.m1[i]), ok.map((i) => B.m1[i] - B.rf1[i]));
+      const line = (name, p, extra, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${esc(plab)}</td><td>${esc(name)}</td><td>${pc(p.cagr)}</td><td>${pc(p.vol)}</td>` +
+        `<td>${isFinite(p.sharpe) ? p.sharpe.toFixed(2) : "–"}</td><td>${p.dd >= 0.5 ? "−" + p.dd.toFixed(0) + "%" : "0%"}</td>${extra}</tr>`;
+      body += line("Buy and hold", bh, "<td>100%</td><td></td>");
+      [["Default score", R.s0], ["Your score", R.s1, "mine"], ["Walk-forward score", R.wf]].forEach(([name, sc, cls]) => {
+        const t = timing(sc, ok);
+        if (!t) return;
+        body += line(name, t.p, `<td>${Math.round(t.inv * 100)}%</td><td>${t.ex >= 0 ? "+" : "−"}${Math.abs(t.ex).toFixed(1)}% (t ${isFinite(t.t) ? signed(t.t, 1) : "–"})</td>`, cls);
+      });
+    });
+    return `<div class="table-wrap"><table class="datatable bt-table"><thead><tr><th>Period</th><th>Strategy</th><th>Annual return</th><th>Volatility</th>` +
+      `<th>Sharpe</th><th>Max drawdown</th><th>Time in stocks</th><th>Vs buy and hold, per year (NW t)</th></tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
   function btDraw() {
@@ -714,7 +790,8 @@
       const el = $("#bt-" + k);
       if (BT.plots[k]) Plotly.react(el, tr, L, cfg); else { Plotly.newPlot(el, tr, L, cfg); BT.plots[k] = true; }
     });
-    $("#bt-fitnote").textContent = "Weights fitted before " + BT.split + ": " +
+    $("#bt-timing").innerHTML = btTiming(R);
+    $("#bt-fitnote").textContent = "Weights fitted before " + BT.split + " (on " + TGT[BT.target].short.toLowerCase() + "): " +
       btIds().map((id) => [id, R.fitP[id].w]).filter((p) => p[1] >= 0.5).sort((a, b) => b[1] - a[1])
         .map(([id, w]) => DATA.backtest.params.find((q) => q.id === id).name + " " + Math.round(w)).join(", ") + ".";
   }
@@ -792,6 +869,14 @@
       $$("[data-h]").forEach((x) => x.classList.toggle("on", x === b));
       btSchedule();
     }));
+    $$("[data-tgt]").forEach((b) => b.addEventListener("click", () => {
+      BT.target = b.dataset.tgt;
+      $$("[data-tgt]").forEach((x) => x.classList.toggle("on", x === b));
+      btSchedule();
+    }));
+    const cu = $("#bt-cut");
+    cu.value = BT.cut; $("#bt-cut-out").textContent = signed(BT.cut, 2);
+    cu.addEventListener("input", () => { BT.cut = Number(cu.value); $("#bt-cut-out").textContent = signed(BT.cut, 2); btSchedule(); });
     $$("[data-nb]").forEach((b) => b.addEventListener("click", () => {
       BT.nb = Number(b.dataset.nb);
       $$("[data-nb]").forEach((x) => x.classList.toggle("on", x === b));

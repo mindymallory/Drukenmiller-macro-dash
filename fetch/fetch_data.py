@@ -466,9 +466,15 @@ def bt_scores(bt, weights):
     return out
 
 
-def ic_weights(bt, rows, h):
+# Backtest targets: key prefix in the JSON and the sign of a "good" correlation
+# (a useful score predicts higher returns but lower volatility and shallower drawdowns).
+TARGETS = {"fwd": 1, "fvol": -1, "fdd": -1}
+
+
+def ic_weights(bt, rows, h, key="fwd"):
     ws = {}
-    fwd = bt[f"fwd{h}"]
+    fwd = bt[f"{key}{h}"]
+    sign = TARGETS[key]
     for tid, *_ in TILES:
         pairs = [(score_of(tid, bt["metrics"][tid][i]), fwd[i]) for i in rows
                  if bt["metrics"][tid][i] is not None and fwd[i] is not None]
@@ -476,14 +482,59 @@ def ic_weights(bt, rows, h):
             ws[tid] = 0.0
             continue
         c = corr([p[0] for p in pairs], [p[1] for p in pairs])
-        ws[tid] = max(0.0, c) if not math.isnan(c) else 0.0
+        ws[tid] = max(0.0, sign * c) if not math.isnan(c) else 0.0
     tot = sum(ws.values())
     return {k: (v / tot * 100 if tot else 100 / len(ws)) for k, v in ws.items()}
 
 
-def bt_summary(bt, h):
+def walk_forward(bt, idx, h, key="fwd"):
     dates = [pd.Timestamp(x) for x in bt["dates"]]
-    fwd = bt[f"fwd{h}"]
+    wf, cur = [None] * len(dates), None
+    for i, dt in enumerate(dates):
+        if dt.month == 1 or cur is None:
+            rows = [j for j in idx if dates[j] + pd.DateOffset(months=h) <= dt]
+            cur = ic_weights(bt, rows, h, key) if len(rows) >= 60 else None
+        if cur is not None:
+            wf[i] = bt_scores({"dates": [bt["dates"][i]], "metrics": {k: [v[i]] for k, v in bt["metrics"].items()}}, cur)[0]
+    return wf
+
+
+def timing_stats(bt, sc, cut, rows):
+    """In the S&P 500 next month when score >= cut, in T-bills otherwise."""
+    r, rf = bt["m1"], bt["rf1"]
+    rows = [i for i in rows if sc[i] is not None and r[i] is not None]
+    if len(rows) < 24:
+        return None
+
+    def st(rets, ex):
+        rets, ex = np.array(rets) / 100, np.array(ex) / 100
+        w = np.cumprod(1 + rets)
+        dd = (1 - (w / np.maximum.accumulate(np.concatenate([[1.0], w]))[1:]).min()) * 100
+        sd = ex.std(ddof=1)
+        return {"cagr": round(float(w[-1] ** (12 / len(rets)) - 1) * 100, 2), "vol": round(float(rets.std(ddof=1)) * math.sqrt(12) * 100, 2),
+                "sharpe": round(float(ex.mean() / sd) * math.sqrt(12), 2) if sd else None, "maxdd": round(float(dd), 1)}
+    bh = [r[i] for i in rows]
+    tm = [r[i] if sc[i] >= cut else rf[i] for i in rows]
+    diff = np.array(tm) - np.array(bh)
+    out = {"n": len(rows), "invested": round(sum(sc[i] >= cut for i in rows) / len(rows), 3),
+           "buy_hold": st(bh, [r[i] - rf[i] for i in rows]), "timed": st(tm, [t - rf[i] for t, i in zip(tm, rows)])}
+    out["excess_ann"] = round(float(diff.mean()) * 12, 2)
+    out["excess_nw_t"] = round(mean_nw_t(diff, 6), 2)
+    return out
+
+
+def mean_nw_t(x, lags):
+    x = np.asarray(x, float)
+    n, e = len(x), x - x.mean()
+    s = (e @ e) / n
+    for l in range(1, lags + 1):
+        s += 2 * (1 - l / (lags + 1)) * (e[l:] @ e[:-l]) / n
+    return float(x.mean() / math.sqrt(s / n)) if s > 0 else float("nan")
+
+
+def bt_summary(bt, h, key="fwd"):
+    dates = [pd.Timestamp(x) for x in bt["dates"]]
+    fwd = bt[f"{key}{h}"]
     w0 = {t[0]: t[3] for t in TILES}
     sc = bt_scores(bt, w0)
     idx = [i for i in range(len(dates)) if sc[i] is not None and fwd[i] is not None]
@@ -495,21 +546,14 @@ def bt_summary(bt, h):
     train = [i for i in idx if dates[i] + pd.DateOffset(months=h) <= split]
     test = [i for i in idx if dates[i] >= split]
     non = idx[::h]
-    fit = ic_weights(bt, train, h)
+    fit = ic_weights(bt, train, h, key)
     sc_fit = bt_scores(bt, fit)
     # walk-forward: refit each January on rows whose forward window has closed
-    wf = [None] * len(dates)
-    cur = None
-    for i, dt in enumerate(dates):
-        if dt.month == 1 or cur is None:
-            rows = [j for j in idx if dates[j] + pd.DateOffset(months=h) <= dt]
-            cur = ic_weights(bt, rows, h) if len(rows) >= 60 else None
-        if cur is not None:
-            wf[i] = bt_scores({"dates": [bt["dates"][i]], "metrics": {k: [v[i]] for k, v in bt["metrics"].items()}}, cur)[0]
+    wf = walk_forward(bt, idx, h, key)
     wfi = [i for i in idx if wf[i] is not None]
     r = lambda ii, s: round(corr([s[i] for i in ii], [fwd[i] for i in ii]), 3) if len(ii) > 5 else None
     return {
-        "h": h, "n": len(idx), "start": bt["dates"][idx[0]], "end": bt["dates"][idx[-1]],
+        "target": key, "h": h, "n": len(idx), "start": bt["dates"][idx[0]], "end": bt["dates"][idx[-1]],
         "corr": round(corr(x, y), 3), "rank_ic": round(rank_ic(x, y), 3), "nw_t": round(nw_t(x, y, h - 1), 2),
         "nonoverlap_corr": r(non, sc), "nonoverlap_n": len(non),
         "split": split.strftime("%Y-%m-%d"), "train_corr": r(train, sc), "test_corr": r(test, sc),
@@ -564,7 +608,7 @@ def main() -> int:
         "effr": "DFF", "upper": "DFEDTARU", "gdp": "GDP", "dgs2": "DGS2", "dgs10": "DGS10",
         "t10y2y": "T10Y2Y", "sep_median": "FEDTARMD", "sep_lr": "FEDTARMDLR",
         "ig": "BAMLC0A0CM", "hy": "BAMLH0A0HYM2", "baa": "BAA10Y",
-        "core_pce": "PCEPILFE", "cpi": "CPIAUCSL",
+        "core_pce": "PCEPILFE", "cpi": "CPIAUCSL", "tbill": "DTB3",
         "be5": "T5YIE", "walcl": "WALCL", "tga": "WTREGEN", "rrp": "RRPONTSYD",
         "debt_gdp": "GFDEGDQ188S", "us10_m": "IRLTLT01USM156N", "fr10_m": "IRLTLT01FRM156N",
     }
@@ -649,15 +693,32 @@ def main() -> int:
     if px is None:
         px, ret_name = Y.get("^GSPC"), "S&P 500 price (total return unavailable this run)"
     for h in (6, 12):
-        fw = []
+        fw, fv, fd = [], [], []
         for asof in dates:
             end = asof + pd.DateOffset(months=h)
             if px is None or end > px.index[-1]:
-                fw.append(None)
+                fw.append(None), fv.append(None), fd.append(None)
                 continue
             a, b = value_at(px, asof), value_at(px, end)
-            fw.append(None if a is None or b is None else round((b[0] / a[0] - 1) * 100, 3))
-        bt[f"fwd{h}"] = fw
+            if a is None or b is None:
+                fw.append(None), fv.append(None), fd.append(None)
+                continue
+            fw.append(round((b[0] / a[0] - 1) * 100, 3))
+            path = px[(px.index >= a[1]) & (px.index <= end)]
+            dr = path.pct_change().dropna()
+            fv.append(round(float(dr.std() * math.sqrt(252) * 100), 3) if len(dr) > 20 else None)
+            fd.append(round(float((1 - (path / path.cummax()).min()) * 100), 3))
+        bt[f"fwd{h}"], bt[f"fvol{h}"], bt[f"fdd{h}"] = fw, fv, fd
+    # one-month-ahead stock and T-bill returns for the timing rule
+    m1, rf1 = [], []
+    for asof in dates:
+        end = asof + pd.DateOffset(months=1)
+        a = value_at(px, asof) if px is not None else None
+        b = value_at(px, end) if px is not None and end <= px.index[-1] else None
+        m1.append(None if a is None or b is None else round((b[0] / a[0] - 1) * 100, 4))
+        tb = value_at(F["tbill"], asof) if F.get("tbill") is not None else None
+        rf1.append(round(tb[0] / 12, 4) if tb else 0.0)
+    bt["m1"], bt["rf1"] = m1, rf1
     bt["ret_name"] = ret_name
     bt["params"] = [{"id": t[0], "name": t[2], "group": t[1], "weight": t[3], "center": t[4], "scale": t[5],
                      "unit": t[6], "center_range": list(t[7]), "scale_range": list(t[8]),
@@ -670,15 +731,36 @@ def main() -> int:
         if x is not None:
             hist.append({"date": bt["dates"][i], "score": round(x, 3)})
     summaries = {}
+    for key in TARGETS:
+        for h in (6, 12):
+            sm = safe(lambda h=h, key=key: bt_summary(bt, h, key), f"backtest {key} {h}m")
+            if sm:
+                summaries[f"{key}{h}" if key != "fwd" else str(h)] = sm
+                log(f"Backtest {key} {h}m ({sm['start']}..{sm['end']}, n={sm['n']}): corr {sm['corr']}, rank IC {sm['rank_ic']}, "
+                    f"NW t {sm['nw_t']}, non-overlap corr {sm['nonoverlap_corr']} (n={sm['nonoverlap_n']}); "
+                    f"split {sm['split']}: train {sm['train_corr']}, test {sm['test_corr']}, "
+                    f"IC-fitted on train -> test {sm['fitted_test_corr']}; walk-forward {sm['walkforward_corr']} "
+                    f"(n={sm['walkforward_n']})")
+    # how often a deep drawdown followed a bearish-leaning (<= -0.15) default score
     for h in (6, 12):
-        sm = safe(lambda h=h: bt_summary(bt, h), f"backtest {h}m")
-        if sm:
-            summaries[str(h)] = sm
-            log(f"Backtest {h}m ({sm['start']}..{sm['end']}, n={sm['n']}): corr {sm['corr']}, rank IC {sm['rank_ic']}, "
-                f"NW t {sm['nw_t']}, non-overlap corr {sm['nonoverlap_corr']} (n={sm['nonoverlap_n']}); "
-                f"split {sm['split']}: train {sm['train_corr']}, test {sm['test_corr']}, "
-                f"IC-fitted on train -> test {sm['fitted_test_corr']}; walk-forward {sm['walkforward_corr']} "
-                f"(n={sm['walkforward_n']})")
+        dd = bt[f"fdd{h}"]
+        ii = [i for i in range(len(dates)) if default_scores[i] is not None and dd[i] is not None]
+        lo = [i for i in ii if default_scores[i] <= -0.15]
+        hi = [i for i in ii if default_scores[i] > -0.15]
+        if lo and hi:
+            msg = []
+            for th in (10, 20):
+                p_lo = sum(dd[i] > th for i in lo) / len(lo)
+                p_hi = sum(dd[i] > th for i in hi) / len(hi)
+                msg.append(f">{th}%: {p_lo:.0%} after score<=-0.15 (n={len(lo)}) vs {p_hi:.0%} otherwise (n={len(hi)})")
+            log(f"Drawdown odds {h}m: " + "; ".join(msg))
+    split_y = int(summaries["12"]["split"][:4]) if "12" in summaries else 2013
+    rows_all = list(range(len(dates)))
+    for label, rows in (("full", rows_all), (f"from {split_y}", [i for i in rows_all if dates[i].year >= split_y])):
+        tst = safe(lambda rows=rows: timing_stats(bt, default_scores, -0.15, rows), f"timing {label}")
+        if tst:
+            log(f"Timing (in stocks when score >= -0.15), {label}, n={tst['n']}, invested {tst['invested']:.0%}: "
+                f"buy&hold {tst['buy_hold']}; timed {tst['timed']}; excess {tst['excess_ann']}%/yr, NW t {tst['excess_nw_t']}")
     bt["summary"] = summaries
 
     # per-tile share of months in each state since the tile's data starts
