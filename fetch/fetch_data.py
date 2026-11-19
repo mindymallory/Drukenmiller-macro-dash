@@ -108,6 +108,22 @@ def yahoo_close(tickers: list[str], years: int = MARKET_YEARS) -> pd.DataFrame:
     if not frames:
         raise RuntimeError("Yahoo: no data returned")
     out = pd.concat(frames, axis=1)
+    # yfinance's threaded downloads occasionally drop a ticker (for example a
+    # "database is locked" error from its timezone cache). Retry those one at
+    # a time without threads.
+    missing = [t for t in tickers if t not in out.columns or out[t].dropna().empty]
+    for t in missing:
+        try:
+            df = yf.download(t, period=f"{years}y", interval="1d",
+                             auto_adjust=True, progress=False, threads=False)
+            c = df["Close"]
+            c = c[t] if isinstance(c, pd.DataFrame) else c
+            if not c.dropna().empty:
+                out[t] = c
+                log(f"yahoo retry {t}: ok")
+        except Exception as e:  # noqa: BLE001
+            log(f"yahoo retry {t}: {e}")
+        time.sleep(0.5)
     out.index = pd.to_datetime(out.index).tz_localize(None).normalize()
     out = out.loc[:, ~out.columns.duplicated()].sort_index()
     return out
@@ -394,6 +410,7 @@ def main() -> int:
         dec = (chg < 0).sum(axis=1)
         net = (adv - dec)[counted >= 0.8 * px.shape[1]]
         net = net.iloc[1:]
+        log(f"A/D line: {px.shape[1]} of {len(tick)} constituents, {len(net)} days, last {net.index[-1].date()}")
         return net.cumsum(), net, int(px.shape[1])
 
     ad_res = safe(build_ad, "S&P 500 A/D line")
