@@ -156,7 +156,7 @@ body {
 .g .split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; width: 100%; margin-top: 4px; }
 .g .split span { display: block; height: 100%; }
 .g .split-label { font-size: 12px; color: var(--text-muted); width: 100%; }
-.g.flash { animation: flash 1.6s ease-out; }
+.g.flash, .card.flash { animation: flash 1.6s ease-out; }
 @keyframes flash { from { background: color-mix(in srgb, var(--series-1) 14%, transparent); } to { background: transparent; } }
 
 /* Chips */
@@ -235,3 +235,6 @@ summary { cursor: pointer; color: var(--text-secondary); }
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } .plot.sq { height: 340px; } }
 .bt-table tr.grp td { text-align: left; font-weight: 650; color: var(--text-secondary); padding-top: 10px; }
 .har-h { margin: 14px 0 2px; font-size: 14px; }
+.glink-text { white-space: nowrap; font-size: 13px; }
+.glink { display: inline-block; min-width: 18px; text-align: center; border: 1px solid var(--grid); border-radius: 9px; font-size: 12px; line-height: 16px; text-decoration: none; margin-left: 4px; }
+.clink { font-size: 13px; }

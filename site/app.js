@@ -64,6 +64,15 @@
       el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
     }
   }
+  function goChart(tileId) {
+    showTab("charts", { keepHash: true, keepScroll: true });
+    history.replaceState(null, "", "#c-" + tileId);
+    const el = document.querySelector(`#charts [data-tile="${tileId}"]`) || document.getElementById("c-" + tileId);
+    if (el) {
+      el.scrollIntoView({ block: "start" });
+      el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+    } else window.scrollTo(0, 0);
+  }
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
   /* ------------------------------------------------------------- map -- */
@@ -128,13 +137,13 @@
     el.style.background = tint(t);
     el.tabIndex = 0;
     el.setAttribute("role", "button");
-    el.setAttribute("aria-label", `${t.name}: ${st.label}. ${t.reading}. Open the guide.`);
+    el.setAttribute("aria-label", `${t.name}: ${st.label}. ${t.reading}. Open the chart.`);
     el.title = t.reading;
     el.dataset.id = t.id;
     el.innerHTML = `<div class="tile-h"><span class="tile-name"><span aria-hidden="true">${st.icon}</span> ${esc(t.name)}</span>` +
       `<span class="tile-val">${t.spark ? esc(t.spark.value) : ""}</span></div><div class="tile-plot"></div>`;
-    el.addEventListener("click", () => goGuide(t.id));
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goGuide(t.id); } });
+    el.addEventListener("click", () => goChart(t.id));
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goChart(t.id); } });
     return el;
   }
   function drawSpark(te, t) {
@@ -229,12 +238,13 @@
 
   function renderMapList() {
     const rows = DATA.tiles.map((t) =>
-      `<tr><td><a href="#g-${t.id}" data-guide="${t.id}">${esc(t.name)}</a></td><td>${chip(t.state)}</td>` +
+      `<tr><td><a href="#c-${t.id}" data-chart="${t.id}">${esc(t.name)}</a> <a class="glink" href="#g-${t.id}" data-guide="${t.id}" aria-label="Explanation of ${esc(t.name)}">?</a></td><td>${chip(t.state)}</td>` +
       `<td class="ago">${chip(t.state_ago)}</td><td class="r">${esc(t.reading)}</td></tr>`).join("");
     $("#maplist").innerHTML = "<h2>Every signal</h2>" +
       '<table class="tiletable"><thead><tr><th>Signal</th><th>Now</th><th class="ago">Year ago</th><th>Reading</th></tr></thead>' +
       `<tbody>${rows}</tbody></table>`;
     $$("#maplist [data-guide]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); goGuide(a.dataset.guide); }));
+    $$("#maplist [data-chart]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); goChart(a.dataset.chart); }));
   }
 
   /* ----------------------------------------------------------- guide -- */
@@ -255,6 +265,10 @@
       const old = $(".now", art);
       if (old) old.remove();
       art.querySelector("h2").after(box);
+      if (!$(".clink", art)) {
+        box.insertAdjacentHTML("beforeend", `<a class="clink" href="#c-${t.id}" data-chart="${t.id}">See the chart ›</a>`);
+        $(".clink", art).addEventListener("click", (e) => { e.preventDefault(); goChart(t.id); });
+      }
     });
   }
 
@@ -393,7 +407,7 @@
         '<p class="section-note">Recomputed at each month-end using only data published by then. Above +0.35 with broad agreement is the bullish zone; below −0.35 the bearish zone.</p>');
       const g = document.createElement("div"); g.className = "grid"; root.appendChild(g);
       const card = document.createElement("article"); card.className = "card wide"; g.appendChild(card);
-      card.innerHTML = '<div class="card-head"><h3>Overall score</h3></div>';
+      card.innerHTML = '<div class="card-head"><h3>Overall score</h3></div><p class="reading"><a class="glink-text" href="#g-overall" data-guide="overall">How the overall score is built ›</a></p>';
       addPlot(card, historyPlot());
     }
 
@@ -405,13 +419,14 @@
         const t = c.tile ? tileById[c.tile] : null;
         const card = document.createElement("article");
         card.className = "card"; card.id = "c-" + c.id;
+        if (c.tile) card.dataset.tile = c.tile;
         let badge = "";
         if (t) badge = `<a class="chip ${t.state}" href="#g-${t.id}" data-guide="${t.id}"><span class="dot" aria-hidden="true"></span>` +
           `<span aria-hidden="true">${STATE[t.state].icon}</span>${STATE[t.state].label}</a>`;
         else if (c.trend) badge = `<span class="chip ${c.trend.state}"><span class="dot" aria-hidden="true"></span>` +
           `${TREND[c.trend.state]} (${signed(c.trend.dev, 1)}%)</span>`;
         card.innerHTML = `<div class="card-head"><h3>${esc(c.title)}</h3>${badge}</div>` +
-          (t ? `<p class="reading">${esc(t.reading)}</p>` : "") +
+          (t ? `<p class="reading">${esc(t.reading)} <a class="glink-text" href="#g-${t.id}" data-guide="${t.id}">What this is and how it's scored ›</a></p>` : "") +
           `<div class="stats">${(c.stats || []).map(statHTML).join("")}</div>`;
         grid.appendChild(card);
         if (c.series && c.series.length) addPlot(card, seriesPlot(c.series, c.refs, c.unit));
@@ -996,6 +1011,7 @@
   function route() {
     const h = (location.hash || "").slice(1);
     if (h.startsWith("g-")) goGuide(h.slice(2));
+    else if (h.startsWith("c-")) goChart(h.slice(2));
     else if (["charts", "backtest", "guide", "about"].includes(h)) showTab(h, { keepHash: true });
     else showTab("map", { keepHash: true });
   }
