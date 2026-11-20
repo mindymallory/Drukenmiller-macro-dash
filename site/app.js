@@ -320,11 +320,11 @@
     };
   }
   function traceFor(s, i, n) {
-    const colors = [css("--series-1"), css("--series-2"), css("--series-3")];
+    const colors = [css("--series-1"), css("--series-2"), css("--series-3"), css("--series-4")];
     const ref = s.style === "dash";
     return {
       x: s.x, y: s.y, name: s.name, type: "scatter", mode: "lines",
-      line: { color: ref ? css("--text-muted") : colors[i % 3], width: ref ? 1.5 : 2, dash: ref ? "dash" : s.style === "dot" ? "dot" : "solid" },
+      line: { color: ref ? css("--text-muted") : colors[i % 4], width: ref ? 1.5 : 2, dash: ref ? "dash" : s.style === "dot" ? "dot" : "solid" },
       hovertemplate: "%{y}<extra>" + esc(s.name) + "</extra>", showlegend: n > 1,
     };
   }
@@ -827,6 +827,46 @@
       `<th>Sharpe</th><th>Max drawdown</th><th>Time in stocks</th><th>Vs buy and hold, per year (NW t)</th></tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
+  /* HAR volatility test (fixed: default score, built in the Python step). */
+  function btHar() {
+    const H = (DATA.backtest || {}).har;
+    if (!H || !Object.keys(H).length) return '<p class="caveat">The volatility test did not run in the latest refresh.</p>';
+    const r2 = (v) => (v === undefined || v === null || !isFinite(v) ? "–" : (v * 100).toFixed(1) + "%");
+    const tt = (b, t) => (b === undefined ? "" : `${signed(b, 2)} (t ${signed(t, 1)})`);
+    const yr = (iso) => iso.slice(0, 4);
+    let html = "", lead = [];
+    ["6", "12"].forEach((h) => {
+      const X = H[h];
+      if (!X) return;
+      const sy = yr(X.split);
+      let body = "";
+      const panel = (P, label) => {
+        if (!P) return;
+        body += `<tr class="grp"><td colspan="5">${esc(label)} · from ${fmtDate(P.start)} · ${P.n} months</td></tr>`;
+        P.models.forEach((m) => {
+          const cls = m.model.includes("score") ? ' class="mine"' : "";
+          body += `<tr${cls}><td>${esc(m.model)}</td><td class="ins">${r2(m.r2)}</td><td class="oos">${r2(m.r2_test)}</td><td class="oos">${r2(m.r2_wf)}</td><td>${tt(m.score_b, m.score_t)}</td></tr>`;
+        });
+      };
+      panel(X.long, "Since 2000: realized vol only");
+      panel(X.iv, `With implied vol (${X.iv_name})`);
+      const mz = X.mz;
+      const mzLine = mz ? `<p class="meta"><b>Is ${X.iv_name} an unbiased forecast?</b> Regressing the next ${h} months' realized vol on ${X.iv_name} (Mincer-Zarnowitz, ${mz.n} months from ${yr(mz.start)}): intercept ${mz.a.toFixed(1)} (t ${signed(mz.a_t, 1)}), slope ${mz.b.toFixed(2)} (t ${signed(mz.b_t1, 1)} against a slope of 1), R² ${r2(mz.r2)}. ${X.iv_name} averaged ${mz.iv_mean.toFixed(1)} against ${mz.rv_mean.toFixed(1)} realized, and sat above what followed in ${mz.iv_above.toFixed(0)}% of months. That gap is the variance risk premium: option sellers charge for insurance, so implied vol runs high as a forecast. The regressions above estimate their own intercept and slope, so they correct for that level bias; the raw index does not.</p>` : "";
+      html += `<h4 class="har-h">Next ${h} months</h4><div class="table-wrap"><table class="datatable bt-table"><thead><tr><th>Model</th><th>R², whole sample</th><th>R², ${sy} on (fit before)</th><th>R², walk-forward</th><th>Score coefficient (NW t)</th></tr></thead><tbody>${body}</tbody></table></div>${mzLine}`;
+      // headline: does the score add, out of sample, on the implied-vol sample?
+      const P = X.iv || X.long;
+      if (P) {
+        const g = (n) => P.models.find((m) => m.model === n) || {};
+        const base = X.iv ? g("HAR + implied vol") : g("HAR"), withS = X.iv ? g("HAR + implied vol + score") : g("HAR + score");
+        if (base.r2_wf !== undefined && withS.r2_wf !== undefined) {
+          const d = (withS.r2_wf - base.r2_wf) * 100;
+          lead.push(`${h} months: adding the score ${d > 0.5 ? "raises" : d < -0.5 ? "lowers" : "barely changes"} the walk-forward R² (${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} pts), score t ${signed(withS.score_t, 1)}`);
+        }
+      }
+    });
+    return (lead.length ? `<p class="bt-lead small">${esc(lead.join(". "))}.</p>` : "") + html;
+  }
+
   function btDraw() {
     const R = btCompute();
     BT.last = R;
@@ -839,6 +879,8 @@
       if (BT.plots[k]) Plotly.react(el, tr, L, cfg); else { Plotly.newPlot(el, tr, L, cfg); BT.plots[k] = true; }
     });
     $("#bt-timing").innerHTML = btTiming(R);
+    const hh = $("#bt-har");
+    if (hh && !hh.dataset.done) { hh.innerHTML = btHar(); hh.dataset.done = "1"; }
     $("#bt-fitnote").textContent = "Weights fitted before " + BT.split + " (on " + TGT[BT.target].short.toLowerCase() + "): " +
       btIds().map((id) => [id, R.fitP[id].w]).filter((p) => p[1] >= 0.5).sort((a, b) => b[1] - a[1])
         .map(([id, w]) => DATA.backtest.params.find((q) => q.id === id).name + " " + Math.round(w)).join(", ") + ".";

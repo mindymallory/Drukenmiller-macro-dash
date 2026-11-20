@@ -85,6 +85,9 @@
         <div class="controls btctl mini"><span class="controls-label">Cutoff</span><input type="range" id="bt-cut" min="-0.6" max="0.4" step="0.05" aria-label="Score cutoff"><output id="bt-cut-out"></output></div></div>
         <p class="meta">Each month-end, hold the S&amp;P 500 (total return) for the next month if the score is at or above the cutoff, otherwise 3-month T-bills. The default cutoff, −0.15, steps out only when the read is Leaning bearish or worse. No trading costs or taxes. The NW t tests the monthly return gap against buy and hold. The walk-forward score needs five years of history before its first fit, so it holds stocks until then. The cutoff is one more setting you can overfit.</p>
         <div id="bt-timing"></div></article>
+      <article class="card wide"><div class="card-head"><h3>Does the score add to a volatility forecast? (HAR test)</h3></div>
+        <p class="meta">The standard way to forecast volatility is a HAR model: realized vol over the past day, week and month predicts what comes next, because volatility clusters. Add the S&amp;P options market's own forecast at the same horizon (Cboe's VIX6M and VIX1Y), then ask whether the score explains anything those two leave out. Target: annualized volatility of daily S&amp;P 500 total returns over the next 6 or 12 months. Out-of-sample R² compares the forecast's squared error with that of the average realized vol in the fitting window; below zero means the model did worse than that average. Rows that include the score are shaded. This test always uses the default score, not the sandbox settings. The implied-vol rows start when Cboe's history does (VIX1Y in 2007, VIX6M in 2008), so their fitting window before the split is short and includes 2008. NW t uses Newey-West errors for the overlapping windows.</p>
+        <div id="bt-har"></div></article>
     </div>
 
     <h2 class="section-title">Sandbox: change the weights and thresholds</h2>

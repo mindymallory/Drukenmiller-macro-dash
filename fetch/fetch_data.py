@@ -136,6 +136,36 @@ def yahoo_close(tickers: list[str], start: str = MKT_START) -> pd.DataFrame:
     return out.sort_index()
 
 
+CBOE_YAHOO = {"VIX": "^VIX", "VIX3M": "^VIX3M", "VIX6M": "^VIX6M", "VIX1Y": "^VIX1Y"}
+
+
+def cboe_index(name: str) -> pd.Series:
+    """Daily close of a Cboe volatility index from Cboe's own history file, Yahoo as fallback."""
+    try:
+        r = requests.get(f"https://cdn.cboe.com/api/global/us_indices/daily_prices/{name}_History.csv",
+                         headers=UA, timeout=30)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text))
+        cols = {c.strip().upper(): c for c in df.columns}
+        vcol = cols.get("CLOSE") or cols.get(name.upper()) or df.columns[-1]
+        s = pd.Series(pd.to_numeric(df[vcol], errors="coerce").values,
+                      index=pd.to_datetime(df[df.columns[0]], errors="coerce"))
+        s = s[s.index.notna()].dropna().sort_index()
+        s = s[~s.index.duplicated(keep="last")]
+        if s.empty:
+            raise ValueError("empty file")
+        log(f"Cboe {name}: {len(s)} obs, {s.index[0].date()} to {s.index[-1].date()}")
+        return s
+    except Exception as e:  # noqa: BLE001
+        log(f"Cboe {name} file failed ({e}); trying Yahoo {CBOE_YAHOO[name]}")
+    c = yahoo_close([CBOE_YAHOO[name]], start="2000-01-01")
+    s = clean(c[CBOE_YAHOO[name]])
+    if s is None:
+        raise RuntimeError(f"{name}: no data from Cboe or Yahoo")
+    log(f"Yahoo {CBOE_YAHOO[name]}: {len(s)} obs, {s.index[0].date()} to {s.index[-1].date()}")
+    return s
+
+
 def sp500_tickers() -> list[str]:
     u = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
     try:
@@ -532,6 +562,105 @@ def mean_nw_t(x, lags):
     return float(x.mean() / math.sqrt(s / n)) if s > 0 else float("nan")
 
 
+# ------------------------------------------------------------------ HAR ----
+# Does the score add to a volatility forecast built from lagged realized vol
+# and from option-implied vol at the same horizon?
+# y = realized vol of daily S&P total returns over the next h months (annualized %).
+# HAR regressors at each month-end: RV over the last 1, 5 and 22 trading days
+# (Corsi 2009). Implied vol: Cboe VIX6M for 6 months, VIX1Y for 12 months.
+
+def ols_fit(X, y):
+    X1 = np.column_stack([np.ones(len(X)), X])
+    b, *_ = np.linalg.lstsq(X1, y, rcond=None)
+    return b
+
+
+def ols_nw(X, y, lags):
+    """Coefficients, Newey-West (Bartlett) standard errors and R² for y on [1, X]."""
+    X1 = np.column_stack([np.ones(len(X)), X])
+    XtX_inv = np.linalg.pinv(X1.T @ X1)
+    b = XtX_inv @ X1.T @ y
+    e = y - X1 @ b
+    u = e[:, None] * X1
+    S_ = u.T @ u
+    for l in range(1, lags + 1):
+        G = u[l:].T @ u[:-l]
+        S_ += (1 - l / (lags + 1)) * (G + G.T)
+    V = XtX_inv @ S_ @ XtX_inv
+    se = np.sqrt(np.maximum(np.diag(V), 1e-300))
+    r2 = 1 - (e @ e) / (((y - y.mean()) ** 2).sum())
+    return b, se, float(r2)
+
+
+def har_panel(bt, feats, models, need, h, split):
+    """Fit each model on the common sample where every column in `need` exists."""
+    dates = [pd.Timestamp(x) for x in bt["dates"]]
+    y_all = bt[f"fvol{h}"]
+    idx = [i for i in range(len(dates)) if y_all[i] is not None and all(feats[c][i] is not None for c in need)]
+    if len(idx) < 48:
+        return None
+    y = np.array([y_all[i] for i in idx], float)
+    tr = [k for k, i in enumerate(idx) if dates[i] + pd.DateOffset(months=h) <= split]
+    te = [k for k, i in enumerate(idx) if dates[i] >= split]
+    out = {"start": bt["dates"][idx[0]], "n": len(idx), "n_train": len(tr), "n_test": len(te), "models": []}
+    for name, cols in models:
+        X = np.array([[feats[c][i] for c in cols] for i in idx], float)
+        b, se, r2 = ols_nw(X, y, h - 1)
+        row = {"model": name, "r2": round(r2, 3)}
+        if "score" in cols:
+            k = cols.index("score") + 1
+            row["score_b"], row["score_t"] = round(float(b[k]), 2), round(float(b[k] / se[k]), 2)
+        if "iv" in cols:
+            k = cols.index("iv") + 1
+            row["iv_b"], row["iv_t"] = round(float(b[k]), 2), round(float(b[k] / se[k]), 2)
+        if len(tr) >= 30 and len(te) >= 12:
+            bb = ols_fit(X[tr], y[tr])
+            pred = bb[0] + X[te] @ bb[1:]
+            bench = y[tr].mean()
+            row["r2_test"] = round(1 - ((y[te] - pred) ** 2).sum() / ((y[te] - bench) ** 2).sum(), 3)
+        # walk-forward: refit each January on months whose h-month window had closed
+        preds, ys, bens, cur = [], [], [], None
+        for k, i in enumerate(idx):
+            dt = dates[i]
+            if dt.month == 1 or cur is None:
+                rows = [q for q, j in enumerate(idx) if dates[j] + pd.DateOffset(months=h) <= dt]
+                cur = (ols_fit(X[rows], y[rows]), y[rows].mean()) if len(rows) >= 48 else None
+            if cur is not None:
+                preds.append(cur[0][0] + X[k] @ cur[0][1:]); ys.append(y[k]); bens.append(cur[1])
+        if len(ys) >= 24:
+            ys_, pr_, be_ = np.array(ys), np.array(preds), np.array(bens)
+            row["r2_wf"] = round(1 - ((ys_ - pr_) ** 2).sum() / ((ys_ - be_) ** 2).sum(), 3)
+            out["n_wf"] = len(ys)
+        out["models"].append(row)
+    return out
+
+
+def mincer_zarnowitz(bt, iv, h):
+    """Realized vol over the next h months regressed on implied vol at the same horizon."""
+    y_all = bt[f"fvol{h}"]
+    idx = [i for i in range(len(y_all)) if y_all[i] is not None and iv[i] is not None]
+    if len(idx) < 48:
+        return None
+    y = np.array([y_all[i] for i in idx], float)
+    x = np.array([iv[i] for i in idx], float)
+    b, se, r2 = ols_nw(x[:, None], y, h - 1)
+    return {"n": len(idx), "start": bt["dates"][idx[0]], "a": round(float(b[0]), 2), "a_t": round(float(b[0] / se[0]), 2),
+            "b": round(float(b[1]), 2), "b_se": round(float(se[1]), 3), "b_t1": round(float((b[1] - 1) / se[1]), 2),
+            "r2": round(r2, 3), "iv_mean": round(float(x.mean()), 2), "rv_mean": round(float(y.mean()), 2),
+            "iv_above": round(float((x > y).mean() * 100), 0)}
+
+
+def har_tests(bt, score, h, split):
+    iv = bt["iv6"] if h == 6 else bt["iv12"]
+    feats = {"rvd": bt["rvd"], "rvw": bt["rvw"], "rvm": bt["rvm"], "iv": iv, "score": score}
+    H = ["rvd", "rvw", "rvm"]
+    long = har_panel(bt, feats, [("HAR", H), ("HAR + score", H + ["score"])], H + ["score"], h, split)
+    ivp = har_panel(bt, feats, [("HAR", H), ("HAR + score", H + ["score"]), ("Implied vol only", ["iv"]),
+                                ("HAR + implied vol", H + ["iv"]), ("HAR + implied vol + score", H + ["iv", "score"])],
+                    H + ["iv", "score"], h, split)
+    return {"split": split.strftime("%Y-%m-%d"), "iv_name": "VIX6M" if h == 6 else "VIX1Y",
+            "long": long, "iv": ivp, "mz": mincer_zarnowitz(bt, iv, h)}
+
 def bt_summary(bt, h, key="fwd"):
     dates = [pd.Timestamp(x) for x in bt["dates"]]
     fwd = bt[f"{key}{h}"]
@@ -631,6 +760,9 @@ def main() -> int:
             if Y[t] is None:
                 errors.append(f"Yahoo {t}: no data")
 
+    # ---- Cboe volatility indices (30-day, 3-month, 6-month and 1-year implied vol)
+    V = {k: safe(lambda k=k: cboe_index(k), f"Cboe {k}") for k in ("VIX", "VIX3M", "VIX6M", "VIX1Y")}
+
     # ---- derived series
     B = {}
 
@@ -719,6 +851,22 @@ def main() -> int:
         tb = value_at(F["tbill"], asof) if F.get("tbill") is not None else None
         rf1.append(round(tb[0] / 12, 4) if tb else 0.0)
     bt["m1"], bt["rf1"] = m1, rf1
+    # HAR inputs at each month-end: realized vol over the last 1, 5 and 22 trading days,
+    # and implied vol matched to the horizon (VIX6M, VIX1Y)
+    rvd, rvw, rvm = [], [], []
+    ivs = {"iv6": [], "iv12": [], "vix": []}
+    dr = px.pct_change().dropna() if px is not None else None
+    for asof in dates:
+        w = dr[dr.index <= asof] if dr is not None else None
+        ok = w is not None and len(w) >= 22 and (asof - w.index[-1]).days <= 5
+        rvd.append(round(float(abs(w.iloc[-1]) * math.sqrt(252) * 100), 3) if ok else None)
+        rvw.append(round(float(math.sqrt((w.iloc[-5:] ** 2).mean() * 252) * 100), 3) if ok else None)
+        rvm.append(round(float(math.sqrt((w.iloc[-22:] ** 2).mean() * 252) * 100), 3) if ok else None)
+        for key, nm in (("iv6", "VIX6M"), ("iv12", "VIX1Y"), ("vix", "VIX")):
+            v = value_at(V[nm], asof) if V.get(nm) is not None else None
+            ivs[key].append(round(v[0], 2) if v and (asof - v[1]).days <= 5 else None)
+    bt["rvd"], bt["rvw"], bt["rvm"] = rvd, rvw, rvm
+    bt.update(ivs)
     bt["ret_name"] = ret_name
     bt["params"] = [{"id": t[0], "name": t[2], "group": t[1], "weight": t[3], "center": t[4], "scale": t[5],
                      "unit": t[6], "center_range": list(t[7]), "scale_range": list(t[8]),
@@ -762,6 +910,26 @@ def main() -> int:
             log(f"Timing (in stocks when score >= -0.15), {label}, n={tst['n']}, invested {tst['invested']:.0%}: "
                 f"buy&hold {tst['buy_hold']}; timed {tst['timed']}; excess {tst['excess_ann']}%/yr, NW t {tst['excess_nw_t']}")
     bt["summary"] = summaries
+    har = {}
+    for h in (6, 12):
+        sp = pd.Timestamp(summaries[str(h)]["split"]) if str(h) in summaries else pd.Timestamp("2013-01-01")
+        res = safe(lambda h=h, sp=sp: har_tests(bt, default_scores, h, sp), f"HAR {h}m")
+        if not res:
+            continue
+        har[str(h)] = res
+        for pk in ("long", "iv"):
+            P = res[pk]
+            if not P:
+                log(f"HAR {h}m {pk}: too few months")
+                continue
+            log(f"HAR {h}m [{pk} sample] from {P['start']}, n={P['n']}, train {P['n_train']}, test {P['n_test']}, wf {P.get('n_wf')}")
+            for r in P["models"]:
+                log(f"   {r['model']}: R2 {r['r2']}, test R2 {r.get('r2_test')}, walk-forward R2 {r.get('r2_wf')}"
+                    + (f", score b {r['score_b']} t {r['score_t']}" if "score_b" in r else "")
+                    + (f", IV b {r['iv_b']} t {r['iv_t']}" if "iv_b" in r else ""))
+        if res["mz"]:
+            log(f"MZ {h}m {res['iv_name']}: {res['mz']}")
+    bt["har"] = har
 
     # per-tile share of months in each state since the tile's data starts
     for t in tiles:
@@ -792,6 +960,10 @@ def main() -> int:
         sep.append({"year": "Longer run", "median": round(float(F["sep_lr"].iloc[-1]), 3)})
     nl13 = B["net_liq"].diff(13) if B.get("net_liq") is not None else None
     fr_us = (F["fr10_m"] - F["us10_m"]).dropna() if F["fr10_m"] is not None and F["us10_m"] is not None else None
+
+    vix_ratio = (V["VIX"] / V["VIX3M"]).dropna() if V.get("VIX") is not None and V.get("VIX3M") is not None else None
+    _px = Y.get("^SP500TR") if Y.get("^SP500TR") is not None else Y.get("^GSPC")
+    rv22 = (_px.pct_change().rolling(22).std() * math.sqrt(252) * 100).dropna() if _px is not None else None
 
     def trended(cid, tile, title, s, digits, unit_label=None):
         return {"id": cid, "tile": tile, "title": title, "unit": "",
@@ -855,6 +1027,20 @@ def main() -> int:
              ("cl", "CL=F", "WTI crude oil ($/bbl)"), ("ng", "NG=F", "Natural gas ($/MMBtu)"),
              ("gc", "GC=F", "Gold ($/oz)"), ("hg", "HG=F", "Copper ($/lb)"),
              ("zs", "ZS=F", "Soybeans (¢/bu)"), ("zc", "ZC=F", "Corn (¢/bu)")]]},
+        {"title": "Volatility (context, not scored)",
+         "note": "Cboe implied-vol indices, priced off S&P 500 options at each horizon, against the volatility the S&P actually delivered over the past month. Implied vol usually sits above realized vol because option sellers charge a premium for insurance. Not in the score; the Backtest tab tests whether the score adds anything to them.",
+         "charts": [
+            {"id": "vix_term", "tile": None, "title": "VIX term structure: implied vol by horizon", "unit": "",
+             "series": S([ser("VIX (30 days)", V.get("VIX"), d5, 2), ser("VIX3M (3 months)", V.get("VIX3M"), d5, 2),
+                          ser("VIX6M (6 months)", V.get("VIX6M"), d5, 2), ser("VIX1Y (1 year)", V.get("VIX1Y"), d5, 2)]),
+             "stats": S([stat("VIX", V.get("VIX"), "", 1), stat("VIX6M", V.get("VIX6M"), "", 1), stat("VIX1Y", V.get("VIX1Y"), "", 1)])},
+            {"id": "vix_ratio", "tile": None, "title": "VIX / VIX3M (above 1 means near-term stress: the curve is inverted)", "unit": "",
+             "series": S([ser("VIX / VIX3M", vix_ratio, d10, 3)]), "refs": [{"y": 1}],
+             "stats": S([stat("VIX / VIX3M", vix_ratio, "", 2)])},
+            {"id": "rv_iv", "tile": None, "title": "Realized vs implied: past-month S&P vol and the VIX", "unit": "",
+             "series": S([ser("Realized vol, past 22 trading days", rv22, d10, 2), ser("VIX", V.get("VIX"), d10, 2)]),
+             "stats": S([stat("Realized vol, 1 month", rv22, "", 1)])},
+        ]},
         {"title": "Rates and the fiscal backdrop (context, not scored)", "charts": [
             {"id": "rates", "tile": None, "title": "Treasury yields", "unit": "%",
              "series": S([ser("10-yr", F["dgs10"], d5, 2), ser("2-yr", F["dgs2"], d5, 2),

@@ -233,3 +233,5 @@ summary { cursor: pointer; color: var(--text-secondary); }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .plot.sq { height: 400px; }
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } .plot.sq { height: 340px; } }
+.bt-table tr.grp td { text-align: left; font-weight: 650; color: var(--text-secondary); padding-top: 10px; }
+.har-h { margin: 14px 0 2px; font-size: 14px; }
