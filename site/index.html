@@ -70,10 +70,13 @@
     <p class="caveat">Corr. is the Pearson correlation of the score with the next return over all months; rank IC is the same on ranks (Spearman), less swayed by a few extreme months. The Newey-West t uses errors that allow for the overlap between neighboring windows; above about 2 is the usual bar. Non-overlapping keeps every 6th or 12th month only. "Before" uses only months whose return window closed before the split, so no test-period return leaks into it. The fitted row's "before" number is in-sample by construction; only its "on" number is a fair test. Walk-forward refits the weights every January on returns already known at the time, so its whole record is out of sample.</p>
 
     <div class="grid bt-grid">
+      <article class="card wide"><div class="card-head"><h3>Score vs the S&amp;P 500's return over the next 6 and 12 months</h3></div>
+        <p class="meta">Every month-end since 2000, colored by era. The black curve is a LOESS smoother (local linear, 40% span), so a bend, a flat stretch or a pattern that holds only at the extremes shows up where a straight fitted line would average it away. Dotted verticals mark the ±0.15 and ±0.35 stance cutoffs. Uses your slider settings; neighboring months share most of their return window, so tight clusters are one episode, not many observations.</p>
+        <div class="pair"><div id="bt-sc6" class="plot sq"></div><div id="bt-sc12" class="plot sq"></div></div></article>
       <article class="card wide"><div class="card-head"><h3>Score and the return that followed</h3></div>
         <p class="meta">Each month's forward return is plotted at the start of its window. Shaded: test period.</p>
         <div id="bt-ts" class="plot tall"></div></article>
-      <article class="card"><div class="card-head"><h3>Score vs next return</h3></div><div id="bt-sc" class="plot"></div></article>
+      <article class="card"><div class="card-head"><h3>Score vs the selected target, before and after the split</h3></div><div id="bt-sc" class="plot"></div></article>
       <article class="card"><div class="card-head"><h3>Average return by score bucket</h3>
         <div class="controls btctl mini" role="group" aria-label="Buckets"><button data-nb="3">Thirds</button><button data-nb="5" class="on">Fifths</button></div></div>
         <div id="bt-bk" class="plot"></div>

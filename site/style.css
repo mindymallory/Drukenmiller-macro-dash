@@ -11,6 +11,7 @@
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;
+  --series-4: #8a5cd6;
   /* map ramp: headwind -> neutral -> tailwind */
   --hw: #d6343c;
   --nt: #8b8e98;
@@ -33,6 +34,7 @@
     --series-1: #3987e5;
     --series-2: #d95926;
     --series-3: #199e70;
+    --series-4: #a07ce8;
     --hw: #f63538;
     --nt: #414554;
     --tw: #30cc5a;
@@ -53,6 +55,7 @@
   --series-1: #3987e5;
   --series-2: #d95926;
   --series-3: #199e70;
+  --series-4: #a07ce8;
   --hw: #f63538;
   --nt: #414554;
   --tw: #30cc5a;
@@ -227,3 +230,6 @@ summary { cursor: pointer; color: var(--text-secondary); }
 .sl input[type=range] { width: 100%; accent-color: var(--series-1); }
 .sl output { font-variant-numeric: tabular-nums; text-align: right; color: var(--text-primary); }
 .bt-lead.small { font-size: 15px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.plot.sq { height: 400px; }
+@media (max-width: 760px) { .pair { grid-template-columns: 1fr; } .plot.sq { height: 340px; } }

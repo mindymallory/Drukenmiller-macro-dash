@@ -662,6 +662,59 @@
     return { tr, L };
   }
 
+  /* LOESS: local linear fit with tricube weights over the nearest span*n points. */
+  function loess(xs, ys, span) {
+    const n = xs.length;
+    if (n < 10) return { x: [], y: [] };
+    const k = Math.max(5, Math.ceil(span * n));
+    const lo = Math.min(...xs), hi = Math.max(...xs), gx = [], gy = [];
+    for (let g = 0; g <= 40; g++) {
+      const x0 = lo + ((hi - lo) * g) / 40;
+      const d = xs.map((x) => Math.abs(x - x0));
+      const h = d.slice().sort((a, b) => a - b)[k - 1] || 1e-9;
+      let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (let i = 0; i < n; i++) {
+        const u = d[i] / (h * 1.0001);
+        if (u >= 1) continue;
+        const w = Math.pow(1 - u * u * u, 3);
+        sw += w; sx += w * xs[i]; sy += w * ys[i]; sxx += w * xs[i] * xs[i]; sxy += w * xs[i] * ys[i];
+      }
+      const den = sw * sxx - sx * sx;
+      const b = Math.abs(den) > 1e-12 ? (sw * sxy - sx * sy) / den : 0;
+      gx.push(x0); gy.push(sw ? (sy - b * sx) / sw + b * x0 : null);
+    }
+    return { x: gx, y: gy };
+  }
+  const ERAS = [["2000–07", 2000, 2007, "--series-1"], ["2008–12", 2008, 2012, "--series-4"], ["2013–19", 2013, 2019, "--series-3"], ["2020 on", 2020, 9999, "--series-2"]];
+  function btEraScatter(h) {
+    return (R) => {
+      const B = DATA.backtest, f = B["fwd" + h], sc = R.s1;
+      const idx = B.dates.map((_, i) => i).filter((i) => sc[i] !== null && f[i] !== null);
+      const tr = ERAS.map(([name, y0, y1, col]) => {
+        const ii = idx.filter((i) => { const y = Number(B.dates[i].slice(0, 4)); return y >= y0 && y <= y1; });
+        return { x: ii.map((i) => sc[i]), y: ii.map((i) => f[i]), text: ii.map((i) => B.dates[i].slice(0, 7)), name, type: "scatter", mode: "markers",
+          marker: { color: css(col), size: 6, opacity: 0.7 }, legendgroup: name, showlegend: h === 6,
+          hovertemplate: "%{text}: score %{x:+.2f}, next " + h + "m %{y:.1f}%<extra></extra>" };
+      });
+      const xs = idx.map((i) => sc[i]), ys = idx.map((i) => f[i]);
+      const sm = loess(xs, ys, 0.4);
+      tr.push({ x: sm.x, y: sm.y, name: "Smoothed (LOESS)", type: "scatter", mode: "lines", legendgroup: "lo", showlegend: h === 6,
+        line: { color: css("--text-primary"), width: 2.5 }, hovertemplate: "score %{x:+.2f}: %{y:.1f}%<extra>LOESS</extra>" });
+      const L = btLayoutBase();
+      Object.assign(L, { margin: { l: 52, r: 12, t: h === 6 ? 52 : 28, b: 40 }, hovermode: "closest",
+        legend: { orientation: "h", x: 0, y: 1.02, yanchor: "bottom", font: { size: 11 } },
+        xaxis: ax({ title: { text: "Score at month-end", font: { size: 11 } }, range: [-1.05, 1.05] }),
+        yaxis: ax({ ticksuffix: "%", title: { text: `S&P 500 total return, next ${h} months`, font: { size: 11 } } }) });
+      L.shapes.push({ type: "line", xref: "paper", x0: 0, x1: 1, y0: 0, y1: 0, line: { color: css("--axis"), width: 1 } });
+      [-0.35, -0.15, 0.15, 0.35].forEach((x) => L.shapes.push({ type: "line", yref: "paper", x0: x, x1: x, y0: 0, y1: 1,
+        line: { color: css("--axis"), width: 1, dash: "dot" } }));
+      const rho = pearson(ranks(xs), ranks(ys));
+      L.annotations.push({ xref: "paper", yref: "paper", x: 1, y: 1, xanchor: "right", yanchor: "top", showarrow: false,
+        text: `Next ${h} months · n = ${idx.length} · rank IC ${isFinite(rho) ? signed(rho, 2) : "–"}`, font: { size: 11, color: css("--text-muted") } });
+      return { tr, L };
+    };
+  }
+
   function btScatter(R) {
     const B = DATA.backtest, f = tgtArr(), sc = R.s1, T = TGT[BT.target];
     const train = new Set(trainRows(R.idx1, BT.h)), test = new Set(testRows(R.idx1));
@@ -675,14 +728,9 @@
     const gap = R.idx1.filter((i) => !train.has(i) && !test.has(i));
     if (gap.length) tr.push(Object.assign(grp("Gap (window spans the split)", (i) => !train.has(i) && !test.has(i), css("--text-muted")), {}));
     const xs = R.idx1.map((i) => sc[i]), ys = R.idx1.map((i) => f[i]);
-    if (xs.length > 3) {
-      const mx = mean(xs), my = mean(ys);
-      let sxy = 0, sxx = 0;
-      xs.forEach((x, k) => { sxy += (x - mx) * (ys[k] - my); sxx += (x - mx) ** 2; });
-      const b = sxx ? sxy / sxx : 0, lo = Math.min(...xs), hi = Math.max(...xs);
-      tr.push({ x: [lo, hi], y: [my + b * (lo - mx), my + b * (hi - mx)], name: "Fit, whole sample", type: "scatter", mode: "lines",
-        line: { color: css("--text-primary"), width: 1.5, dash: "dash" }, hoverinfo: "skip" });
-    }
+    const sm = loess(xs, ys, 0.4);
+    if (sm.x.length) tr.push({ x: sm.x, y: sm.y, name: "Smoothed (LOESS)", type: "scatter", mode: "lines",
+      line: { color: css("--text-primary"), width: 2 }, hoverinfo: "skip" });
     const L = btLayoutBase();
     Object.assign(L, { margin: { l: 52, r: 12, t: 28, b: 40 }, hovermode: "closest",
       xaxis: ax({ title: { text: "Score at month-end", font: { size: 11 } }, range: [-1.05, 1.05] }),
@@ -785,7 +833,7 @@
     $("#bt-lead").innerHTML = btLead(R);
     $("#bt-stats").innerHTML = btTable(R);
     const cfg = { displayModeBar: false, responsive: true };
-    [["ts", btTimePlot], ["sc", btScatter], ["bk", btBuckets]].forEach(([k, fn]) => {
+    [["sc6", btEraScatter(6)], ["sc12", btEraScatter(12)], ["ts", btTimePlot], ["sc", btScatter], ["bk", btBuckets]].forEach(([k, fn]) => {
       const { tr, L } = fn(R);
       const el = $("#bt-" + k);
       if (BT.plots[k]) Plotly.react(el, tr, L, cfg); else { Plotly.newPlot(el, tr, L, cfg); BT.plots[k] = true; }
